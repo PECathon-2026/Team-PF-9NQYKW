@@ -188,6 +188,7 @@ export class Store {
             ...(payload.review_pass
               ? { review_pass: payload.review_pass }
               : {}),
+            ...(payload.pass_turns ? { pass_turns: payload.pass_turns } : {}),
           };
         } else if (payload.agent_totals && payload.totals) {
           const agent = payload.agent_totals;

@@ -98,6 +98,8 @@ function fixture() {
           severity: "high",
           title: "Incorrect arithmetic",
           detail: "The candidate adds an extra unit.",
+          in_scope: true,
+          evidence: { path: "calc.py", line: 2 },
         },
       ],
     }),
@@ -344,6 +346,7 @@ describe("backend", () => {
       expect(Object.keys(event.payload).sort()).toEqual([
         "budget",
         "mission_cap",
+        "pass_turns",
         "per_agent",
         "review_pass",
         "total",
@@ -351,6 +354,10 @@ describe("backend", () => {
       expect(event.payload.budget.shadow_security).toBe(12);
       expect(event.payload.mission_cap).toBe(44);
       expect(event.payload.review_pass.code_rev).toBe(event.code_rev);
+      for (const role of ["shadow_review", "shadow_security", "verifier"])
+        expect(event.payload.pass_turns[role]).toBe(
+          event.payload.review_pass.turns[role],
+        );
       expect(event.payload.total.turns).toBeGreaterThanOrEqual(previousTurns);
       previousTurns = event.payload.total.turns;
       const agents = Object.values(event.payload.per_agent) as any[];
@@ -372,6 +379,12 @@ describe("backend", () => {
         (e) =>
           e.payload.per_agent.shogun?.input_tokens === 5 &&
           e.payload.per_agent.shogun?.output_tokens === 2,
+      ),
+    ).toBe(true);
+    expect(
+      usageEvents.some(
+        (event) =>
+          event.agent === "shogun" && event.payload.pass_turns.shogun === 1,
       ),
     ).toBe(true);
     const replay: any[] = [];
@@ -591,6 +604,102 @@ test("a mission deadline cancels a pending model call and escalates", async () =
   ).toBe(true);
 });
 
+test("fix cycles extend the live deadline up to the hard maximum and preserve cancellation", async () => {
+  const f = fixture();
+  let aborted = false;
+  const model = {
+    async complete(
+      _role: string,
+      _messages: any[],
+      _tools: any[],
+      signal: AbortSignal,
+    ) {
+      await new Promise((_, reject) =>
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(Error("DEADLINE"));
+          },
+          { once: true },
+        ),
+      );
+      return {};
+    },
+  };
+  const service = new Service({
+    root: join(f.root, "extended-deadline-runtime"),
+    registry: f.registry,
+    runner: {
+      ...localRunner,
+      async check() {
+        return { exitCode: 1, output: "failed", duration: 0 };
+      },
+    },
+    model,
+    deadlineMs: 800,
+    fixExtensionMs: 500,
+    maxDeadlineMs: 1600,
+  });
+  apps.push({ close: () => service.close() });
+  const mission = service.create("tiny", f.request);
+  const started = service.store
+    .events(mission)
+    .find((event) => event.type === "mission_started")!.payload;
+  expect(started.deadline_max - started.deadline).toBe(800);
+  expect(started.fix_extension_ms).toBe(500);
+  service.reserve(mission, "fixes");
+  expect(service.store.get(mission).deadline).toBe(started.deadline + 500);
+  service.reserve(mission, "fixes");
+  expect(service.store.get(mission).deadline).toBe(started.deadline_max);
+  service.reserve(mission, "fixes");
+  expect(service.store.get(mission).deadline).toBe(started.deadline_max);
+  expect(() => service.reserve(mission, "fixes")).toThrow("FIX_LIMIT");
+  await Bun.sleep(900);
+  expect(service.store.get(mission).state).not.toBe("ESCALATED");
+  expect(aborted).toBe(false);
+  await waitFor(() => service.store.get(mission).state === "ESCALATED", 2500);
+  expect(aborted).toBe(true);
+  expect(
+    service.store.events(mission).find((event) => event.type === "escalation")!
+      .payload.reason,
+  ).toBe("DEADLINE");
+});
+
+test("deadline extension and hard maximum are configurable in seconds", () => {
+  const f = fixture();
+  const previousExtension = process.env.DEVPILOT_FIX_EXTENSION_SECONDS;
+  const previousMaximum = process.env.DEVPILOT_MAX_MISSION_SECONDS;
+  try {
+    process.env.DEVPILOT_FIX_EXTENSION_SECONDS = "25";
+    process.env.DEVPILOT_MAX_MISSION_SECONDS = "210";
+    const service = new Service({
+      root: join(f.root, "env-deadline"),
+      registry: f.registry,
+      runner: localRunner,
+    });
+    apps.push({ close: () => service.close() });
+    expect(service.fixExtensionMs).toBe(25000);
+    expect(service.maxDeadlineMs).toBe(210000);
+    process.env.DEVPILOT_MAX_MISSION_SECONDS = "100";
+    expect(
+      () =>
+        new Service({
+          root: join(f.root, "invalid-deadline"),
+          registry: f.registry,
+          runner: localRunner,
+        }),
+    ).toThrow("INVALID_DEADLINE_CONFIGURATION");
+  } finally {
+    if (previousExtension === undefined)
+      delete process.env.DEVPILOT_FIX_EXTENSION_SECONDS;
+    else process.env.DEVPILOT_FIX_EXTENSION_SECONDS = previousExtension;
+    if (previousMaximum === undefined)
+      delete process.env.DEVPILOT_MAX_MISSION_SECONDS;
+    else process.env.DEVPILOT_MAX_MISSION_SECONDS = previousMaximum;
+  }
+});
+
 test("paired baseline retains the multi-agent base and links both projections", async () => {
   const a = setup();
   const multiResponse = await post(`${a.url}/missions`, {
@@ -715,6 +824,8 @@ test("reviewers get a fresh per-revision budget after a repair and reach approva
             severity: "high",
             title: "Incorrect arithmetic",
             detail: "Adds an extra unit.",
+            in_scope: true,
+            evidence: { path: "calc.py", line: 2 },
           },
         ],
       },
@@ -751,6 +862,15 @@ test("reviewers get a fresh per-revision budget after a repair and reach approva
   expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
   expect(app.service.store.get(mission_id).fixes).toBe(1);
   const events = app.service.store.events(mission_id);
+  const initialDeadline = events.find(
+    (event) => event.type === "mission_started",
+  )!.payload.deadline;
+  expect(
+    events.find(
+      (event) =>
+        event.type === "task_update" && event.payload.status === "blocked",
+    )!.payload.deadline,
+  ).toBe(initialDeadline + 60000);
   const revisions = events
     .filter((event) => event.type === "diff")
     .map((event) => event.code_rev);
@@ -787,6 +907,188 @@ test("reviewers get a fresh per-revision budget after a repair and reach approva
     expect(snapshots.at(-1)!.payload.per_agent[role].turns).toBe(4);
   }
   expect(events.some((event) => event.type === "approval_needed")).toBe(true);
+}, 20000);
+
+test("unscoped, unsupported, and already addressed reviewer findings are advisory", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.samurai = [
+    call(
+      "edit_file",
+      { path: "calc.py", old_text: "return a - b", new_text: "return a + b" },
+      "edit-scope",
+    ),
+    text({ done: true }),
+  ];
+  script.shadow_review = [
+    text({
+      findings: [
+        {
+          severity: "critical",
+          title: "Hard link hardening",
+          detail: "An unrelated hardening idea.",
+          in_scope: false,
+          evidence: { path: "calc.py", line: 2 },
+        },
+        {
+          severity: "high",
+          title: "Unsupported claim",
+          detail: "No concrete evidence.",
+          in_scope: true,
+        },
+        {
+          severity: "high",
+          title: "Invalid file evidence",
+          detail: "File does not exist.",
+          in_scope: true,
+          evidence: { path: "missing.py", line: 2 },
+        },
+        {
+          severity: "high",
+          title: "Already resolved",
+          detail: "Addressed.",
+          in_scope: true,
+          addressed: true,
+          evidence: { path: "calc.py", line: 2 },
+        },
+      ],
+    }),
+  ];
+  script.shadow_security = [text({ findings: [] })];
+  const app = startServer({
+    root: join(f.root, "scope-runtime"),
+    registry: f.registry,
+    runner: localRunner,
+    mock: true,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  const findings = app.service.store
+    .events(mission_id)
+    .filter((event) => event.type === "finding");
+  expect(findings).toHaveLength(4);
+  expect(
+    findings.every(
+      (event) =>
+        !event.payload.blocking &&
+        event.payload.severity === "low" &&
+        event.payload.advisory_reason,
+    ),
+  ).toBe(true);
+  expect(app.service.store.get(mission_id).fixes).toBe(0);
+}, 20000);
+
+test("a repeated normalized finding is advisory after a single send-back", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.shadow_review = [
+    text({
+      findings: [
+        {
+          severity: "high",
+          title: "Incorrect arithmetic!",
+          detail: "Adds one.",
+          in_scope: true,
+          evidence: { failing_case: "add(2, 3) returns 6 instead of 5" },
+        },
+      ],
+    }),
+    text({
+      findings: [
+        {
+          severity: "high",
+          title: "incorrect   arithmetic",
+          detail: "Same claim again.",
+          in_scope: true,
+          evidence: { path: "calc.py", line: 2 },
+        },
+      ],
+    }),
+  ];
+  script.shadow_security = [
+    text({
+      findings: [
+        {
+          severity: "high",
+          title: "Already fixed",
+          detail: "Fixed in the candidate.",
+          in_scope: true,
+          addressed: true,
+          evidence: { path: "calc.py", line: 2 },
+        },
+      ],
+    }),
+    text({
+      findings: [
+        {
+          severity: "high",
+          title: "already FIXED!",
+          detail: "Reported again.",
+          in_scope: true,
+          evidence: { path: "calc.py", line: 2 },
+        },
+      ],
+    }),
+  ];
+  const app = startServer({
+    root: join(f.root, "repeat-runtime"),
+    registry: f.registry,
+    runner: localRunner,
+    mock: true,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  const findings = app.service.store
+    .events(mission_id)
+    .filter((event) => event.type === "finding");
+  expect(
+    findings.filter((event) => event.payload.action === "sent_back"),
+  ).toHaveLength(1);
+  const advisory = findings.find(
+    (event) =>
+      event.payload.action === "open" &&
+      event.payload.advisory_reason?.includes("repeated"),
+  )!;
+  expect(advisory.payload.blocking).toBe(false);
+  expect(advisory.payload.severity).toBe("low");
+  expect(advisory.payload.finding_id).toBe(
+    findings.find((event) => event.payload.action === "sent_back")!.payload
+      .finding_id,
+  );
+  const addressed = findings.filter((event) =>
+    event.payload.title.toLowerCase().includes("already"),
+  );
+  expect(addressed).toHaveLength(2);
+  expect(
+    addressed.every(
+      (event) =>
+        !event.payload.blocking &&
+        event.payload.advisory_reason.includes("addressed"),
+    ),
+  ).toBe(true);
+  expect(app.service.store.get(mission_id).fixes).toBe(1);
 }, 20000);
 
 test("scanner findings keep their ID through repair and resolve from a rerun", async () => {
@@ -839,8 +1141,8 @@ test("scanner findings keep their ID through repair and resolve from a rerun", a
     (e) => e.type === "finding" && e.verified && e.payload.action === "open",
   )!;
   expect(opened.payload).toMatchObject({
-    severity: "high",
-    blocking: true,
+    severity: "low",
+    blocking: false,
     action: "open",
   });
   expect(
@@ -850,7 +1152,7 @@ test("scanner findings keep their ID through repair and resolve from a rerun", a
         e.payload.action === "sent_back" &&
         e.payload.finding_id === opened.payload.finding_id,
     ),
-  ).toBe(true);
+  ).toBe(false);
   const resolved = events.find(
     (e) =>
       e.type === "finding" &&

@@ -29,7 +29,7 @@ async function main() {
     });
     if (response.status !== 202) throw Error("MISSION_CREATE_FAILED");
     const { mission_id } = (await response.json()) as { mission_id: string };
-    const until = Date.now() + 155000;
+    const until = Date.now() + app.service.maxDeadlineMs + 5000;
     while (
       Date.now() < until &&
       !["AWAITING_APPROVAL", "COMPLETED", "REJECTED", "ESCALATED"].includes(
@@ -53,6 +53,32 @@ async function main() {
           ([role, usage]) => [role, usage.turns],
         ),
       ),
+      revisions: [
+        ...new Set(
+          events
+            .filter((event) => event.type === "diff")
+            .map((event) => String(event.code_rev).split(":")[0]),
+        ),
+      ],
+      elapsed_ms: Date.now() - mission.created,
+      findings: {
+        blocking: events.filter(
+          (event) =>
+            event.type === "finding" &&
+            event.payload.action === "open" &&
+            event.payload.blocking,
+        ).length,
+        advisory: events.filter(
+          (event) =>
+            event.type === "finding" &&
+            event.payload.action === "open" &&
+            !event.payload.blocking,
+        ).length,
+        sent_back: events.filter(
+          (event) =>
+            event.type === "finding" && event.payload.action === "sent_back",
+        ).length,
+      },
       escalation_reason:
         typeof reason === "string" && /^[A-Z_0-9]+$/.test(reason)
           ? reason
@@ -72,3 +98,4 @@ async function main() {
   }
 }
 await main();
+process.exit(process.exitCode || 0);
