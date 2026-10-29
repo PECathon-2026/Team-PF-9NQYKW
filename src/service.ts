@@ -17,6 +17,7 @@ import { editTool, readTool } from "./tools";
 import { makeRunner, suiteDigest, type Runner } from "./runner";
 import { MiniMax, MockModel, type Message, type Model } from "./model";
 import { fixtureScript } from "./mock-fixtures";
+import { renderDiff } from "./diff";
 
 const terminal = new Set(["COMPLETED", "REJECTED", "ESCALATED"]);
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -33,6 +34,19 @@ const safeError = (e: any) => {
   const s = String(e?.message || e);
   return /^[A-Z_0-9]+$/.test(s) ? s : "INTERNAL_ERROR";
 };
+const isBlocking = (severity: string) =>
+  ["medium", "high", "critical"].includes(severity);
+function findingPayload(f: any, action: string, evidenceEventIds: number[]) {
+  return {
+    finding_id: f.id,
+    severity: f.severity,
+    blocking: isBlocking(f.severity),
+    action,
+    title: f.title,
+    detail: f.detail,
+    evidence_event_ids: evidenceEventIds,
+  };
+}
 const toolDefinitions = [
   {
     name: "list_dir",
@@ -190,6 +204,13 @@ export class Service {
   finish(id: string, state: string, payload: any = {}) {
     const m = this.store.get(id);
     if (!m || terminal.has(m.state)) return;
+    const openFindings = new Map<string, any>();
+    for (const event of this.store.events(id)) {
+      if (event.type !== "finding") continue;
+      if (event.payload.action === "resolve")
+        openFindings.delete(event.payload.finding_id);
+      else openFindings.set(event.payload.finding_id, event.payload);
+    }
     this.state(id, state);
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
@@ -200,8 +221,11 @@ export class Service {
       "orchestrator",
       {
         status: state,
+        ...this.store.usage(id),
+        baseline_of: m.baseline_of,
+        paired_mission_id: m.paired_mission_id,
         evidence_ids: JSON.parse(m.evidence),
-        unresolved_findings: [],
+        unresolved_findings: [...openFindings.values()],
         ...payload,
       },
       m.current_rev,
@@ -221,10 +245,28 @@ export class Service {
     );
     this.finish(id, "ESCALATED");
   }
-  create(repo: string, request: string, mode = "multi") {
+  create(
+    repo: string,
+    request: string,
+    mode = "multi",
+    pairedMissionId?: string,
+  ) {
     const cfg = this.registry[repo];
     if (!cfg) throw Error("UNKNOWN_REPO");
     if (!["multi", "baseline"].includes(mode)) throw Error("INVALID_MODE");
+    let parent: any = null;
+    if (pairedMissionId) {
+      parent = this.store.get(pairedMissionId);
+      if (
+        !parent ||
+        mode !== "baseline" ||
+        parent.mode !== "multi" ||
+        parent.repo !== repo ||
+        parent.request !== request ||
+        parent.paired_mission_id
+      )
+        throw Error("INVALID_PAIR");
+    }
     const root = join(this.root, "repos", repo);
     mkdirSync(join(root, "versions"), { recursive: true });
     const link = join(root, "current");
@@ -233,12 +275,14 @@ export class Service {
       copyTree(resolve(cfg.path), v);
       symlinkSync(v, link);
     }
-    const base = treeHash(link),
+    const source = parent ? join(this.root, "missions", parent.id, "r0") : link;
+    const base = treeHash(source),
       mid = id("m"),
       dir = join(this.root, "missions", mid),
       snap = join(dir, "r0");
     mkdirSync(dir, { recursive: true });
-    copyTree(link, snap);
+    if (parent && base !== parent.base_hash) throw Error("INVALID_PAIR");
+    copyTree(source, snap);
     const now = Date.now(),
       deadline = now + this.deadlineMs,
       rev = `r0:sha256:${base}`;
@@ -251,25 +295,35 @@ export class Service {
       if (entry.suite_sha256 && entry.suite_sha256 !== suiteHash)
         throw Error("SUITE_CHANGED");
     }
-    this.store.db
-      .query(
-        "INSERT INTO missions(id,repo,request,state,base_hash,base_ref,current_rev,snapshot,suite_hash,suite,mode,created,deadline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      )
-      .run(
-        mid,
-        repo,
-        request,
-        "PLANNING",
-        base,
-        link,
-        rev,
-        snap,
-        suiteHash,
-        suite,
-        mode,
-        now,
-        deadline,
-      );
+    if (parent && (parent.suite_hash !== suiteHash || parent.suite !== suite))
+      throw Error("INVALID_PAIR");
+    this.store.db.transaction(() => {
+      this.store.db
+        .query(
+          "INSERT INTO missions(id,repo,request,state,base_hash,base_ref,current_rev,snapshot,suite_hash,suite,mode,created,deadline,baseline_of,paired_mission_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          mid,
+          repo,
+          request,
+          "PLANNING",
+          base,
+          link,
+          rev,
+          snap,
+          suiteHash,
+          suite,
+          mode,
+          now,
+          deadline,
+          parent?.id || null,
+          parent?.id || null,
+        );
+      if (parent)
+        this.store.db
+          .query("UPDATE missions SET paired_mission_id=? WHERE id=?")
+          .run(mid, parent.id);
+    })();
     this.store.event(
       mid,
       "mission_started",
@@ -281,15 +335,31 @@ export class Service {
         deadline,
         suite_id: entry?.suite_id || null,
         mode,
+        baseline_of: parent?.id || null,
+        paired_mission_id: parent?.id || null,
       },
       rev,
       true,
     );
+    if (parent)
+      this.store.event(
+        parent.id,
+        "agent_msg",
+        "orchestrator",
+        {
+          to: "human",
+          message: "Baseline mission paired.",
+          baseline_of: parent.id,
+          paired_mission_id: mid,
+        },
+        parent.current_rev,
+        true,
+      );
     this.timer(mid, deadline);
     queueMicrotask(() => void this.run(mid));
     return mid;
   }
-  reserve(id: string, kind: "turns" | "fixes") {
+  reserve(id: string, kind: "turns" | "fixes", agent?: string) {
     this.check(id);
     const max = kind === "turns" ? 20 : 3;
     const result = this.store.db
@@ -297,6 +367,35 @@ export class Service {
       .run(id, max);
     if (!result.changes)
       throw Error(kind === "turns" ? "TURN_LIMIT" : "FIX_LIMIT");
+    if (kind === "turns" && agent) this.addUsage(id, agent, 1, 0, 0);
+  }
+  addUsage(
+    id: string,
+    agent: string,
+    modelTurns: number,
+    prompt: number,
+    completion: number,
+  ) {
+    this.store.db
+      .query(
+        `INSERT INTO usage(mission_id,agent,model_turns,prompt_tokens,completion_tokens) VALUES(?,?,?,?,?)
+      ON CONFLICT(mission_id,agent) DO UPDATE SET model_turns=model_turns+excluded.model_turns, prompt_tokens=prompt_tokens+excluded.prompt_tokens, completion_tokens=completion_tokens+excluded.completion_tokens`,
+      )
+      .run(id, agent, modelTurns, prompt, completion);
+    const totals = this.store.usage(id);
+    this.store.event(
+      id,
+      "usage",
+      agent,
+      {
+        model_turns: modelTurns,
+        tokens: { prompt, completion },
+        agent_totals: totals.by_agent[agent],
+        totals: { model_turns: totals.model_turns, tokens: totals.tokens },
+      },
+      this.store.get(id).current_rev,
+      true,
+    );
   }
   async session(id: string, role: string, context: any, model: Model) {
     const m = this.check(id),
@@ -312,15 +411,24 @@ export class Service {
     if (role === "baseline") this.baselineHistory.set(id, messages);
     messages.push({ role: "user", content: JSON.stringify(context) });
     while (true) {
-      this.reserve(id, "turns");
+      this.reserve(id, "turns", role);
       const remaining = this.check(id).deadline - Date.now();
-      const response = await model.complete(
+      const result = await model.complete(
         role,
         messages,
         tools,
         AbortSignal.timeout(Math.max(1, remaining)),
       );
       this.check(id);
+      const response = result?.message || result;
+      const usage = result?.message ? result.usage : undefined;
+      const count = (value: unknown) =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+          ? value
+          : 0;
+      const prompt = count(usage?.prompt_tokens ?? usage?.prompt);
+      const completion = count(usage?.completion_tokens ?? usage?.completion);
+      if (prompt || completion) this.addUsage(id, role, 0, prompt, completion);
       messages.push(response);
       if (response.tool_calls?.length) {
         for (const call of response.tool_calls) {
@@ -439,19 +547,33 @@ export class Service {
             const tree = treeHash(dir),
               seq = Number(m.current_rev.match(/^r(\d+)/)?.[1] || 0) + 1,
               rev = `r${seq}:sha256:${tree}`;
+            const text = renderDiff(
+              join(this.root, "missions", mid, "r0"),
+              dir,
+            );
+            const artifactId = id("artifact");
             const affected = (
               this.store.db
                 .query("SELECT id FROM evidence WHERE mission_id=? AND stale=0")
                 .all(mid) as any[]
             ).map((e) => e.id);
-            this.store.db
-              .query(
-                "UPDATE evidence SET stale=1 WHERE mission_id=? AND stale=0",
-              )
-              .run(mid);
-            this.store.db
-              .query("UPDATE missions SET snapshot=?,current_rev=? WHERE id=?")
-              .run(dir, rev, mid);
+            this.store.db.transaction(() => {
+              this.store.db
+                .query(
+                  "INSERT INTO artifacts(id,mission_id,kind,content,sha256) VALUES(?,?,?,?,?)",
+                )
+                .run(artifactId, mid, "diff", text, hash(text));
+              this.store.db
+                .query(
+                  "UPDATE evidence SET stale=1 WHERE mission_id=? AND stale=0",
+                )
+                .run(mid);
+              this.store.db
+                .query(
+                  "UPDATE missions SET snapshot=?,current_rev=? WHERE id=?",
+                )
+                .run(dir, rev, mid);
+            })();
             this.store.event(
               mid,
               "diff",
@@ -460,6 +582,8 @@ export class Service {
                 base_hash: m.base_hash,
                 revision: rev,
                 changed_paths: [args.path],
+                text,
+                artifact_id: artifactId,
               },
               rev,
               true,
@@ -471,7 +595,7 @@ export class Service {
                 "orchestrator",
                 {
                   old_revision: m.current_rev,
-                  evidence_ids: affected,
+                  affected_evidence_ids: affected,
                   reason: "edit",
                   new_revision: rev,
                 },
@@ -676,6 +800,7 @@ export class Service {
         false,
       );
       let priorFindings: Record<string, any[]> = {};
+      let priorScan: any[] = [];
       for (let cycle = 0; cycle <= 3; cycle++) {
         this.state(mid, "IMPLEMENTING");
         m = this.check(mid);
@@ -843,7 +968,10 @@ export class Service {
           )
             throw Error("MODEL_RESPONSE_INVALID");
           const rf = result.findings.map((f: any) => ({
-            id: id("f"),
+            id:
+              priorFindings[role]?.find(
+                (previous: any) => previous.title === f.title,
+              )?.id || id("f"),
             origin_agent: role,
             severity: f.severity,
             title: String(f.title || "Finding").slice(0, 200),
@@ -855,44 +983,78 @@ export class Service {
                 mid,
                 "finding",
                 m.mode === "baseline" ? "baseline" : role,
-                {
-                  ...f,
-                  action: "resolve",
-                  evidence_event_ids: [checkEvent.id, accEvent.id],
-                },
+                findingPayload(f, "resolve", [checkEvent.id, accEvent.id]),
                 frozen,
                 false,
               );
           for (const f of rf)
-            this.store.event(
-              mid,
-              "finding",
-              m.mode === "baseline" ? "baseline" : role,
-              { ...f, action: "open", evidence_event_ids: [] },
-              frozen,
-              false,
-            );
+            if (
+              !(priorFindings[role] || []).some(
+                (previous: any) =>
+                  previous.id === f.id &&
+                  previous.severity === f.severity &&
+                  previous.detail === f.detail,
+              )
+            )
+              this.store.event(
+                mid,
+                "finding",
+                m.mode === "baseline" ? "baseline" : role,
+                findingPayload(f, "open", []),
+                frozen,
+                false,
+              );
           priorFindings[role] = rf;
           findings.push(...rf);
         }
         const scan = this.scan(m.snapshot);
-        for (const f of scan) {
-          this.store.event(
-            mid,
-            "finding",
-            "shadow_security",
-            {
-              id: id("f"),
-              action: "open",
-              severity: "high",
-              title: f,
-              detail: "Potential unsafe pattern detected.",
-              evidence_event_ids: [],
-            },
-            frozen,
-            true,
-          );
+        const scanEvent = this.store.event(
+          mid,
+          "agent_msg",
+          m.mode === "baseline" ? "baseline" : "shadow_security",
+          {
+            to: "orchestrator",
+            message: "Deterministic security scan completed",
+            scanner_findings: scan.length,
+          },
+          frozen,
+          true,
+        );
+        for (const previous of priorScan) {
+          if (!scan.includes(previous.title))
+            this.store.event(
+              mid,
+              "finding",
+              m.mode === "baseline" ? "baseline" : "shadow_security",
+              findingPayload(previous, "resolve", [scanEvent.id]),
+              frozen,
+              true,
+            );
         }
+        const currentScan: any[] = [];
+        for (const title of scan) {
+          const f = {
+            id:
+              priorScan.find((previous) => previous.title === title)?.id ||
+              id("f"),
+            origin_agent: "shadow_security",
+            severity: "high",
+            title,
+            detail: "Potential unsafe pattern detected.",
+          };
+          findings.push(f);
+          currentScan.push(f);
+          if (!priorScan.some((previous) => previous.id === f.id))
+            this.store.event(
+              mid,
+              "finding",
+              m.mode === "baseline" ? "baseline" : "shadow_security",
+              findingPayload(f, "open", []),
+              frozen,
+              true,
+            );
+        }
+        priorScan = currentScan;
         const reviewEvent = this.record(
           mid,
           "review",
@@ -905,18 +1067,6 @@ export class Service {
           !(priorFindings.shadow_review || []).some((f: any) =>
             ["medium", "high", "critical"].includes(f.severity),
           ),
-        );
-        const scanEvent = this.store.event(
-          mid,
-          "agent_msg",
-          m.mode === "baseline" ? "baseline" : "shadow_security",
-          {
-            to: "orchestrator",
-            message: "Deterministic security scan completed",
-            scanner_findings: scan.length,
-          },
-          frozen,
-          true,
         );
         const securityEvent = this.record(
           mid,
@@ -977,7 +1127,12 @@ export class Service {
             mid,
             "approval_needed",
             "orchestrator",
-            approval,
+            {
+              approval_id: approval.id,
+              evidence_ids: approval.evidence_ids,
+              tree_hash: approval.candidate_hash,
+              decision: null,
+            },
             frozen,
             true,
           );
@@ -986,6 +1141,16 @@ export class Service {
         if (cycle === 3) throw Error("FIX_LIMIT");
         this.reserve(mid, "fixes");
         reason = ids;
+        for (const finding of findings.filter((f) => isBlocking(f.severity))) {
+          this.store.event(
+            mid,
+            "finding",
+            "orchestrator",
+            findingPayload(finding, "sent_back", ids),
+            frozen,
+            true,
+          );
+        }
         baseline = check;
         feedback = `Evaluation failed. Check exit: ${check.exitCode}; acceptance: ${JSON.stringify(accept.criteria)}; findings: ${JSON.stringify(findings.map((f) => ({ title: f.title, severity: f.severity })))}; scanner count: ${scan.length}.`;
         this.state(mid, "REPLANNING");
@@ -1074,7 +1239,12 @@ export class Service {
       mid,
       "approval_result",
       "human",
-      { approval_id: a.id, decision: approved, approved_revision: a.revision },
+      {
+        approval_id: a.id,
+        evidence_ids: a.evidence_ids,
+        tree_hash: a.candidate_hash,
+        decision: approved,
+      },
       m.current_rev,
       true,
     );

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { Service, type Options } from "./service";
 import { loadRegistry } from "./registry";
 import type { Event } from "./store";
@@ -44,16 +43,47 @@ export function startServer(options: Options & { port?: number }) {
         if (server.upgrade(req, { data: { mission, after } })) return;
         return new Response("Upgrade required", { status: 400 });
       }
+      const artifactMatch = url.pathname.match(
+        /^\/missions\/([^/]+)\/artifacts\/([^/]+)$/,
+      );
+      if (req.method === "GET" && artifactMatch) {
+        const artifact: any = service.store.db
+          .query(
+            "SELECT content FROM artifacts WHERE mission_id=? AND id=? AND kind='diff'",
+          )
+          .get(artifactMatch[1]!, artifactMatch[2]!);
+        if (!artifact)
+          return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+        return new Response(artifact.content, {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "x-content-type-options": "nosniff",
+            "content-security-policy": "default-src 'none'",
+            "cache-control": "no-store",
+          },
+        });
+      }
       const match = url.pathname.match(/^\/missions\/([^/]+)(?:\/(approve))?$/);
       if (req.method === "GET" && match && !match[2]) {
         const m = service.store.get(match[1]!);
         if (!m) return Response.json({ error: "NOT_FOUND" }, { status: 404 });
         const events = service.store.events(m.id);
         const { suite, snapshot, base_ref, ...publicMission } = m;
+        const approval = m.approval ? JSON.parse(m.approval) : null;
         return Response.json({
           ...publicMission,
-          approval: m.approval ? JSON.parse(m.approval) : null,
+          approval: approval
+            ? {
+                approval_id: approval.id,
+                evidence_ids: approval.evidence_ids,
+                tree_hash: approval.candidate_hash,
+                decision: m.decision === null ? null : !!m.decision,
+                revision: approval.revision,
+                base_hash: approval.base_hash,
+              }
+            : null,
           evidence: JSON.parse(m.evidence),
+          usage: service.store.usage(m.id),
           watermark: events.at(-1)?.id || 0,
         });
       }
@@ -84,23 +114,35 @@ export function startServer(options: Options & { port?: number }) {
             !body.request.trim() ||
             body.request.length > 10000 ||
             Object.keys(body).some(
-              (k) => !["repo", "request", "mode"].includes(k),
+              (k) =>
+                !["repo", "request", "mode", "paired_mission_id"].includes(k),
             ) ||
             (body.mode !== undefined &&
-              !["multi", "baseline"].includes(body.mode))
+              !["multi", "baseline"].includes(body.mode)) ||
+            (body.paired_mission_id !== undefined &&
+              (typeof body.paired_mission_id !== "string" ||
+                !body.paired_mission_id ||
+                body.mode !== "baseline"))
           )
             return Response.json({ error: "INVALID_REQUEST" }, { status: 400 });
           if (!Object.hasOwn(service.registry, body.repo))
             return Response.json({ error: "UNKNOWN_REPO" }, { status: 404 });
           try {
-            const mid = service.create(body.repo, body.request, body.mode);
-            return Response.json(
-              { mission_id: mid, id: mid, state: "PLANNING" },
-              { status: 202 },
+            const mid = service.create(
+              body.repo,
+              body.request,
+              body.mode,
+              body.paired_mission_id,
             );
-          } catch {
+            return Response.json({ mission_id: mid, id: mid }, { status: 202 });
+          } catch (error: any) {
             return Response.json(
-              { error: "SNAPSHOT_UNAVAILABLE" },
+              {
+                error:
+                  error.message === "INVALID_PAIR"
+                    ? "INVALID_PAIR"
+                    : "SNAPSHOT_UNAVAILABLE",
+              },
               { status: 409 },
             );
           }

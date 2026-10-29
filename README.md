@@ -24,10 +24,14 @@ For trusted local development only, `DEVPILOT_ALLOW_UNISOLATED=1` explicitly per
 ## API and execution
 
 - `POST /missions` accepts `{"repo":"stock","request":"<exact registered request>","mode":"multi"}`. Use `"baseline"` for the single-agent baseline. The response includes `mission_id`.
-- `GET /missions/:id` returns mission state and an event watermark.
+- `GET /missions/:id` returns mission state, usage totals, pairing fields, and an event watermark.
+- `GET /missions/:id/artifacts/:artifactId` returns a mission-scoped diff artifact as plain text.
 - `ws://localhost:8787/ws?mission=<id>&after=<event-id>` replays and streams events.
+- For a paired baseline, pass `"mode":"baseline"` and `"paired_mission_id":"<multi-agent-mission-id>"` with the same repo and request. The baseline starts from the multi-agent run's original base.
 - `POST /missions/:id/approve` accepts `{"approved":true}` or false only at the approval gate. Apply changes `runtime/repos/<id>/current`; the imported source directory is not modified. The candidate and base hashes are checked again before the atomic pointer swap.
 
 Samurai can use `read_file`, `list_dir`, `search`, `edit_file`, and `run_cmd`; `run_cmd` accepts only the registered check ID. Other model roles cannot edit. Edits use staged, path-confined copies; symlinks and special files are rejected. Project tests run with networking disabled, bounded resources, and a read-only candidate mount. The supplied acceptance suites import candidate Python in-process, so the private pytest harness and candidate execute together inside a separate container. Only test IDs and pass/fail outcomes are published. Because the harness and candidate share a process, candidate code can potentially inspect or interfere with the private tests; these suites are not a secrecy or tamper-proof boundary.
 
 Agent messages and review conclusions are claims; observed test exits and scanner observations are labeled separately. The scanner detects a limited set of risky patterns and is not a comprehensive security audit. Incomplete missions escalate on restart, with recovery of a completed pointer swap. This implementation assumes one service instance and a trusted local service account; it does not provide multi-user authentication or host-level protection against a privileged administrator. Mock scripts are trusted configuration for controlled scenarios.
+
+The full event envelopes, payload fields, usage accounting, replay behavior, and pairing contract are documented in [docs/EVENTS.md](docs/EVENTS.md).

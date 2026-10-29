@@ -42,7 +42,7 @@ export class MiniMax implements Model {
     const message = body.choices?.[0]?.message;
     if (!message || message.role !== "assistant")
       throw Error("MODEL_RESPONSE_INVALID");
-    return message;
+    return { message, usage: body.usage };
   }
 }
 export class MockModel implements Model {
@@ -58,6 +58,9 @@ export class MockModel implements Model {
     this.index[role] = i + 1;
     const m = this.script[role]?.[i];
     if (!m) throw Error("MOCK_SCRIPT_EXHAUSTED");
-    return structuredClone(m);
+    const message = structuredClone(m);
+    const usage = message.usage;
+    delete message.usage;
+    return { message, usage };
   }
 }

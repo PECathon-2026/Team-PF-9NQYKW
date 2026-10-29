@@ -116,7 +116,7 @@ describe("supplied fixture missions", () => {
           events.some(
             (e) =>
               e.type === "stale" &&
-              e.payload.evidence_ids.includes(baseline?.id),
+              e.payload.affected_evidence_ids.includes(baseline?.id),
           ),
         ).toBe(true);
       }

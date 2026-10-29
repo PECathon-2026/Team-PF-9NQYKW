@@ -21,7 +21,11 @@ afterEach(() => {
   for (const a of apps.splice(0)) a.close();
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
-const text = (v: any) => ({ role: "assistant", content: JSON.stringify(v) });
+const text = (v: any) => ({
+  role: "assistant",
+  content: JSON.stringify(v),
+  usage: { prompt_tokens: 5, completion_tokens: 2 },
+});
 const call = (name: string, args: any, n: string) => ({
   role: "assistant",
   content: null,
@@ -88,7 +92,15 @@ function fixture() {
   ];
   const review = [
     call("read_file", { path: "calc.py" }, "review1"),
-    text({ findings: [] }),
+    text({
+      findings: [
+        {
+          severity: "high",
+          title: "Incorrect arithmetic",
+          detail: "The candidate adds an extra unit.",
+        },
+      ],
+    }),
     text({ findings: [] }),
   ];
   const security = [text({ findings: [] }), text({ findings: [] })];
@@ -216,7 +228,9 @@ describe("backend", () => {
       request: a.request,
     });
     expect(created.status).toBe(202);
-    const { mission_id } = (await created.json()) as any;
+    const createdBody = (await created.json()) as any;
+    const { mission_id } = createdBody;
+    expect(createdBody).toEqual({ mission_id, id: mission_id });
     expect(
       (
         await post(`${a.url}/missions/${mission_id}/approve`, {
@@ -248,6 +262,58 @@ describe("backend", () => {
       ),
     ).toBe(true);
     expect(m.fixes).toBe(1);
+    const stale = events.find((e) => e.type === "stale")!;
+    expect(stale.payload.old_revision).toBeString();
+    expect(stale.payload.new_revision).toBeString();
+    expect(stale.payload.affected_evidence_ids.length).toBeGreaterThan(0);
+    expect(stale.payload.reason).toBe("edit");
+    const sentBack = events.find(
+      (e) => e.type === "finding" && e.payload.action === "sent_back",
+    )!;
+    expect(sentBack.payload).toMatchObject({
+      finding_id: expect.any(String),
+      severity: "high",
+      blocking: true,
+      action: "sent_back",
+    });
+    expect(
+      events.filter((e) => e.type === "finding").map((e) => e.payload),
+    ).toContainEqual(
+      expect.objectContaining({
+        finding_id: sentBack.payload.finding_id,
+        action: "resolve",
+      }),
+    );
+    const diff = events.filter((e) => e.type === "diff").at(-1)!;
+    expect(diff.payload.text).toContain("+    return a + b");
+    expect(diff.payload.text).toContain("-    return a - b");
+    const artifact = await fetch(
+      `${a.url}/missions/${mission_id}/artifacts/${diff.payload.artifact_id}`,
+    );
+    expect(artifact.status).toBe(200);
+    expect(await artifact.text()).toBe(diff.payload.text);
+    expect(
+      (
+        await fetch(
+          `${a.url}/missions/not-this-mission/artifacts/${diff.payload.artifact_id}`,
+        )
+      ).status,
+    ).toBe(404);
+    const approval = events.find((e) => e.type === "approval_needed")!.payload;
+    expect(approval).toMatchObject({
+      approval_id: expect.any(String),
+      evidence_ids: expect.any(Array),
+      tree_hash: expect.any(String),
+      decision: null,
+    });
+    expect(
+      events
+        .filter((e) => e.type === "usage")
+        .some(
+          (e) =>
+            e.payload.tokens.prompt === 5 && e.payload.tokens.completion === 2,
+        ),
+    ).toBe(true);
     const replay: any[] = [];
     const ws = new WebSocket(
       `ws://127.0.0.1:${a.server.port}/ws?mission=${mission_id}`,
@@ -264,6 +330,35 @@ describe("backend", () => {
     ).toBe(202);
     await waitFor(() => a.service.store.get(mission_id).state === "COMPLETED");
     await waitFor(() => replay.some((e) => e.type === "mission_done"));
+    const done = replay.find((e) => e.type === "mission_done").payload;
+    const resultApproval = replay.find(
+      (e) => e.type === "approval_result",
+    ).payload;
+    expect(resultApproval).toMatchObject({
+      approval_id: approval.approval_id,
+      evidence_ids: approval.evidence_ids,
+      tree_hash: approval.tree_hash,
+      decision: true,
+    });
+    expect(done.status).toBe("COMPLETED");
+    expect(done.model_turns).toBe(m.turns);
+    expect(done.tokens.prompt).toBeGreaterThan(0);
+    expect(done.by_agent.shogun).toMatchObject({
+      model_turns: 1,
+      tokens: { prompt: 5, completion: 2 },
+    });
+    expect(
+      Object.values(done.by_agent).reduce(
+        (sum: number, agent: any) => sum + agent.model_turns,
+        0,
+      ),
+    ).toBe(done.model_turns);
+    expect(
+      Object.values(done.by_agent).reduce(
+        (sum: number, agent: any) => sum + agent.tokens.prompt,
+        0,
+      ),
+    ).toBe(done.tokens.prompt);
     expect(readFileSync(join(m.base_ref, "calc.py"), "utf8")).toContain(
       "a + b",
     );
@@ -419,3 +514,193 @@ test("a mission deadline cancels a pending model call and escalates", async () =
       .some((e) => e.type === "escalation" && e.payload.reason === "DEADLINE"),
   ).toBe(true);
 });
+
+test("paired baseline retains the multi-agent base and links both projections", async () => {
+  const a = setup();
+  const multiResponse = await post(`${a.url}/missions`, {
+    repo: "tiny",
+    request: a.request,
+  });
+  const { mission_id: multiId } = (await multiResponse.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      a.service.store.get(multiId).state,
+    ),
+  );
+  expect(a.service.store.get(multiId).state).toBe("AWAITING_APPROVAL");
+  await post(`${a.url}/missions/${multiId}/approve`, { approved: true });
+  await waitFor(() => a.service.store.get(multiId).state === "COMPLETED");
+  const multi = a.service.store.get(multiId);
+  expect(readFileSync(join(multi.base_ref, "calc.py"), "utf8")).toContain(
+    "a + b",
+  );
+  const response = await post(`${a.url}/missions`, {
+    repo: "tiny",
+    request: a.request,
+    mode: "baseline",
+    paired_mission_id: multiId,
+  });
+  expect(response.status).toBe(202);
+  const { mission_id: baselineId, id } = (await response.json()) as any;
+  expect(id).toBe(baselineId);
+  const baseline = a.service.store.get(baselineId);
+  expect(baseline.base_hash).toBe(multi.base_hash);
+  expect(
+    readFileSync(
+      join(a.root, "runtime", "missions", baselineId, "r0", "calc.py"),
+      "utf8",
+    ),
+  ).toContain("a - b");
+  expect(baseline.baseline_of).toBe(multiId);
+  expect(baseline.paired_mission_id).toBe(multiId);
+  const multiProjection = (await (
+    await fetch(`${a.url}/missions/${multiId}`)
+  ).json()) as any;
+  const baselineProjection = (await (
+    await fetch(`${a.url}/missions/${baselineId}`)
+  ).json()) as any;
+  expect(multiProjection.paired_mission_id).toBe(baselineId);
+  expect(baselineProjection.baseline_of).toBe(multiId);
+  expect(
+    a.service.store.events(baselineId).find((e) => e.type === "mission_started")
+      ?.payload,
+  ).toMatchObject({ baseline_of: multiId, paired_mission_id: multiId });
+  expect(
+    a.service.store
+      .events(multiId)
+      .some((e) => e.payload.paired_mission_id === baselineId),
+  ).toBe(true);
+  expect(
+    (
+      await post(`${a.url}/missions`, {
+        repo: "tiny",
+        request: a.request,
+        mode: "baseline",
+        paired_mission_id: multiId,
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await post(`${a.url}/missions`, {
+        repo: "tiny",
+        request: a.request,
+        mode: "multi",
+        paired_mission_id: multiId,
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await post(`${a.url}/missions`, {
+        repo: "tiny",
+        request: a.request,
+        mode: "baseline",
+        paired_mission_id: "missing",
+      })
+    ).status,
+  ).toBe(409);
+  const artifactId = a.service.store
+    .events(multiId)
+    .find((e) => e.type === "diff")!.payload.artifact_id;
+  expect(
+    (await fetch(`${a.url}/missions/${baselineId}/artifacts/${artifactId}`))
+      .status,
+  ).toBe(404);
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      a.service.store.get(baselineId).state,
+    ),
+  );
+  expect(a.service.store.get(baselineId).state).toBe("AWAITING_APPROVAL");
+  await post(`${a.url}/missions/${baselineId}/approve`, { approved: false });
+  const done = a.service.store
+    .events(baselineId)
+    .find((e) => e.type === "mission_done")!.payload;
+  expect(done).toMatchObject({
+    status: "REJECTED",
+    baseline_of: multiId,
+    paired_mission_id: multiId,
+  });
+  expect(Object.keys(done.by_agent)).toEqual(["baseline"]);
+}, 20000);
+
+test("scanner findings keep their ID through repair and resolve from a rerun", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.samurai = [
+    call(
+      "edit_file",
+      {
+        path: "calc.py",
+        old_text: "return a - b",
+        new_text: "return a + b + 1  # eval(",
+      },
+      "scan-edit-1",
+    ),
+    text({ done: true }),
+    call(
+      "edit_file",
+      {
+        path: "calc.py",
+        old_text: "return a + b + 1  # eval(",
+        new_text: "return a + b",
+      },
+      "scan-edit-2",
+    ),
+    text({ done: true }),
+  ];
+  script.shadow_review = [text({ findings: [] }), text({ findings: [] })];
+  const app = startServer({
+    root: join(f.root, "scanner-runtime"),
+    registry: f.registry,
+    runner: localRunner,
+    mock: true,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  const events = app.service.store.events(mission_id);
+  const opened = events.find(
+    (e) => e.type === "finding" && e.verified && e.payload.action === "open",
+  )!;
+  expect(opened.payload).toMatchObject({
+    severity: "high",
+    blocking: true,
+    action: "open",
+  });
+  expect(
+    events.some(
+      (e) =>
+        e.type === "finding" &&
+        e.payload.action === "sent_back" &&
+        e.payload.finding_id === opened.payload.finding_id,
+    ),
+  ).toBe(true);
+  const resolved = events.find(
+    (e) =>
+      e.type === "finding" &&
+      e.payload.action === "resolve" &&
+      e.payload.finding_id === opened.payload.finding_id,
+  )!;
+  expect(resolved.verified).toBe(true);
+  expect(resolved.payload.evidence_event_ids.length).toBeGreaterThan(0);
+  await post(
+    `http://127.0.0.1:${app.server.port}/missions/${mission_id}/approve`,
+    { approved: false },
+  );
+  expect(
+    app.service.store.events(mission_id).find((e) => e.type === "mission_done")!
+      .payload.unresolved_findings,
+  ).toEqual([]);
+}, 20000);
