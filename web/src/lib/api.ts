@@ -2,14 +2,14 @@ import { isEvent, type MissionEvent } from "./types";
 // POST /missions -> 202 {"id","state"} (doc). Accept legacy {mission_id} too.
 export async function createMission(repo: string, request: string): Promise<string> {
   const r = await fetch("/missions", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ repo, request }) });
-  if (!r.ok) throw new Error(`POST /missions ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) throw new Error(`Could not launch the mission (HTTP ${r.status}): ${(await r.text()).slice(0, 200)}`);
   const j = await r.json(); const id = j.mission_id ?? j.id;
-  if (typeof id !== "string") throw new Error("Response missing mission id");
+  if (typeof id !== "string") throw new Error("The server did not return a mission ID.");
   return id;
 }
 export async function approve(id: string, approved: boolean) {
   const r = await fetch(`/missions/${encodeURIComponent(id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ approved }) });
-  if (!r.ok) throw new Error(`approve ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) throw new Error(`Could not record the decision (HTTP ${r.status}): ${(await r.text()).slice(0, 200)}`);
 }
 export async function fetchEventsOnce(id: string): Promise<MissionEvent[]> {
   // Collect replay for a finished mission (used by comparison view).

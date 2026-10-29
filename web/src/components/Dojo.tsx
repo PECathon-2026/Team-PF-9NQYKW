@@ -7,13 +7,14 @@ import shadowReview from "../assets/agents/shadow_review@192.webp";
 import shadowSecurity from "../assets/agents/shadow_security@192.webp";
 import type { Agent } from "../lib/types";
 import { stageState, type View } from "../lib/derive";
+import { AGENT_NAMES } from "../lib/labels";
 
 export type FigureAgent = "shogun" | "samurai" | "sentinel" | "verifier" | "shadow_review" | "shadow_security";
 export const CAST: { id: FigureAgent; name: string; role: string }[] = [
-  { id: "shogun", name: "Shogun", role: "Planner" }, { id: "samurai", name: "Samurai", role: "Coder" },
-  { id: "sentinel", name: "Sentinel", role: "Tester" }, { id: "verifier", name: "Verifier", role: "Acceptance" },
-  { id: "shadow_review", name: "Shadow Review", role: "Review" }, { id: "shadow_security", name: "Shadow Security", role: "Security" },
-];
+  { id: "shogun", role: "Plans the mission" }, { id: "samurai", role: "Writes the code" },
+  { id: "sentinel", role: "Runs project checks" }, { id: "verifier", role: "Runs the acceptance suite" },
+  { id: "shadow_review", role: "Reviews the code" }, { id: "shadow_security", role: "Reviews for security" },
+].map((c) => ({ ...c, id: c.id as FigureAgent, name: AGENT_NAMES[c.id as FigureAgent] }));
 // 192px-tall art rendered at 96px, so one asset covers 1x and 2x displays.
 const FIGURES: Record<FigureAgent, string> = { shogun, samurai, sentinel, verifier, shadow_review: shadowReview, shadow_security: shadowSecurity };
 const STATUS = { idle: "Idle", work: "Working", done: "Done", failed: "Failed" } as const;
@@ -39,7 +40,7 @@ export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; sel
       {CAST.map((c) => {
         const mood = stageState(v.events, c.id, now); const art = FIGURES[c.id]; const t = turns(v, c.id);
         const style = c.id === "samurai" ? { "--figure-mask": `url("${art}")` } as CSSProperties : undefined;
-        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}, ${c.role}, ${STATUS[mood]}, filter activity`} title={c.role}>
+        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}: ${c.role.toLowerCase()}. ${STATUS[mood]}. Show activity`} title={`${c.role}. Select to show activity.`}>
           <span className={`agent-figure ${mood}`} aria-hidden="true"><span className="figure-mist" /><span className={`figure-art${c.id === "samurai" ? " samurai" : ""}`} style={style}><img src={art} alt="" /></span></span>
           <span className="actor-title">{c.name}</span>
           <span className={`actor-status status-${mood}`}>{STATUS[mood]}{t && <span className={`turns ${t.level}`} title={t.title}> · {t.label}</span>}</span>

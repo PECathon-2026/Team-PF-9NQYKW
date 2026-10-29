@@ -127,8 +127,8 @@ export function derive(input: MissionEvent[]): View {
   if (!pendingApproval) reasons.push("No approval requested");
   else {
     const ar = pendingApproval;
-    if (!diffs.length) reasons.push("No diff — candidate is the unchanged base");
-    if (!ar.code_rev || ar.code_rev !== currentRev) reasons.push("Approval is for a different revision than the current code");
+    if (!diffs.length) reasons.push("No changes: the revision matches the base");
+    if (!ar.code_rev || ar.code_rev !== currentRev) reasons.push("Approval is for a different revision than the latest");
     if (lastStaleId > ar.id) reasons.push("Evidence went stale after approval was requested");
     const ev = ids(ar.payload.evidence_ids);
     if (ev.some((i) => staleIds.has(i))) reasons.push("Approval cites stale evidence");
@@ -139,11 +139,11 @@ export function derive(input: MissionEvent[]): View {
     for (const c of checks) {
       if (c.code_rev !== ar.code_rev) reasons.push(`${c.key} has not rerun on ${short(ar.code_rev)}`);
       else if (unisolated.has(c.event.id)) reasons.push(`${c.key} ran without isolation`);
-      else if (!c.event.verified) reasons.push(`${c.key} result is not observed (claim only)`);
+      else if (!c.event.verified) reasons.push(`${c.key} result is claimed, not observed`);
       else if (c.outcome !== "passed") reasons.push(`${c.key} ${c.outcome}`);
       if (c.stale) reasons.push(`${c.key} is stale`);
     }
-    if (findings.some((f) => f.blocking && !isResolved(f.action))) reasons.push("Blocking finding still open");
+    if (findings.some((f) => f.blocking && !isResolved(f.action))) reasons.push("A blocking finding is still open");
   }
 
   const state = done ? str(done.payload.status, "DONE").toUpperCase()
