@@ -341,7 +341,16 @@ describe("backend", () => {
     expect(usageEvents.length).toBeGreaterThan(0);
     let previousTurns = 0;
     for (const event of usageEvents) {
-      expect(Object.keys(event.payload).sort()).toEqual(["per_agent", "total"]);
+      expect(Object.keys(event.payload).sort()).toEqual([
+        "budget",
+        "mission_cap",
+        "per_agent",
+        "review_pass",
+        "total",
+      ]);
+      expect(event.payload.budget.shadow_security).toBe(12);
+      expect(event.payload.mission_cap).toBe(44);
+      expect(event.payload.review_pass.code_rev).toBe(event.code_rev);
       expect(event.payload.total.turns).toBeGreaterThanOrEqual(previousTurns);
       previousTurns = event.payload.total.turns;
       const agents = Object.values(event.payload.per_agent) as any[];
@@ -690,6 +699,94 @@ test("paired baseline retains the multi-agent base and links both projections", 
     paired_mission_id: multiId,
   });
   expect(Object.keys(done.per_agent)).toEqual(["baseline"]);
+}, 20000);
+
+test("reviewers get a fresh per-revision budget after a repair and reach approval", async () => {
+  const f = fixture();
+  const script: { shadow_review: any[]; shadow_security: any[] } =
+    Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.shadow_review = [
+    call("read_file", { path: "calc.py" }, "review-pass-1-read"),
+    call(
+      "submit_result",
+      {
+        findings: [
+          {
+            severity: "high",
+            title: "Incorrect arithmetic",
+            detail: "Adds an extra unit.",
+          },
+        ],
+      },
+      "review-pass-1-submit",
+    ),
+    call("read_file", { path: "calc.py" }, "review-pass-2-read"),
+    call("submit_result", { findings: [] }, "review-pass-2-submit"),
+  ];
+  script.shadow_security = [
+    call("read_file", { path: "calc.py" }, "security-pass-1-read"),
+    call("submit_result", { findings: [] }, "security-pass-1-submit"),
+    call("read_file", { path: "calc.py" }, "security-pass-2-read"),
+    call("submit_result", { findings: [] }, "security-pass-2-submit"),
+  ];
+  const app = startServer({
+    root: join(f.root, "review-budget-runtime"),
+    registry: f.registry,
+    runner: localRunner,
+    mock: true,
+    port: 0,
+    roleTurnLimits: { shadow_review: 2, shadow_security: 2 },
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  expect(app.service.store.get(mission_id).fixes).toBe(1);
+  const events = app.service.store.events(mission_id);
+  const revisions = events
+    .filter((event) => event.type === "diff")
+    .map((event) => event.code_rev);
+  expect(revisions).toHaveLength(2);
+  for (const role of ["shadow_review", "shadow_security"]) {
+    const calls = events.filter(
+      (event) => event.type === "tool_call" && event.agent === role,
+    );
+    expect(calls.map((event) => event.payload.tool)).toEqual([
+      "read_file",
+      "submit_result",
+      "read_file",
+      "submit_result",
+    ]);
+    expect(calls.map((event) => event.code_rev)).toEqual([
+      revisions[0],
+      revisions[0],
+      revisions[1],
+      revisions[1],
+    ]);
+    const snapshots = events.filter(
+      (event) => event.type === "usage" && event.agent === role,
+    );
+    expect(
+      snapshots
+        .filter((event) => event.payload.review_pass.code_rev === revisions[0])
+        .at(-1)!.payload.review_pass.turns[role],
+    ).toBe(2);
+    expect(
+      snapshots.filter(
+        (event) => event.payload.review_pass.code_rev === revisions[1],
+      )[0]!.payload.review_pass.turns[role],
+    ).toBe(1);
+    expect(snapshots.at(-1)!.payload.per_agent[role].turns).toBe(4);
+  }
+  expect(events.some((event) => event.type === "approval_needed")).toBe(true);
 }, 20000);
 
 test("scanner findings keep their ID through repair and resolve from a rerun", async () => {

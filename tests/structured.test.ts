@@ -758,8 +758,191 @@ test("per-role budgets are independent and a configurable mission cap still appl
   }
 });
 
+test("review caps reset only for a new revision, without resetting the mission cap", () => {
+  const h = manual();
+  h.service.budgetConfig = {
+    missionTurns: 7,
+    roleTurns: { shadow_review: 1, shadow_security: 1, verifier: 1 },
+  };
+  for (const role of ["shadow_review", "shadow_security", "verifier"]) {
+    h.service.reserve("manual", "turns", role);
+    expect(() => h.service.reserve("manual", "turns", role)).toThrow(
+      "TURN_LIMIT",
+    );
+  }
+  h.service.store.db
+    .query("UPDATE missions SET current_rev=? WHERE id=?")
+    .run("r1:sha256:new", "manual");
+  for (const role of ["shadow_review", "shadow_security", "verifier"])
+    h.service.reserve("manual", "turns", role);
+  expect(h.service.store.usage("manual").total.turns).toBe(6);
+  h.service.store.db
+    .query("UPDATE missions SET current_rev=? WHERE id=?")
+    .run("r0:sha256:hash", "manual");
+  expect(() => h.service.reserve("manual", "turns", "shadow_review")).toThrow(
+    "TURN_LIMIT",
+  );
+  h.service.reserve("manual", "turns", "shogun");
+  h.service.store.db
+    .query("UPDATE missions SET current_rev=? WHERE id=?")
+    .run("r2:sha256:newer", "manual");
+  expect(() => h.service.reserve("manual", "turns", "shadow_review")).toThrow(
+    "TURN_LIMIT",
+  );
+  expect(h.service.store.usage("manual").total.turns).toBe(7);
+});
+
+test("every model role receives only its submit tool and a final-turn instruction on its last turn", async () => {
+  for (const [role, phase] of [
+    ["shogun", "plan"],
+    ["samurai", "edit"],
+    ["shadow_review", "review"],
+    ["shadow_security", "review"],
+    ["baseline", "edit"],
+    ["baseline", "review"],
+  ] as const) {
+    const h = manual();
+    h.service.budgetConfig = { roleTurns: { [role]: 2 } };
+    const finalName = phase === "plan" ? "submit_plan" : "submit_result";
+    const payload =
+      phase === "plan"
+        ? goodPlan
+        : phase === "edit"
+          ? { done: true }
+          : { findings: [] };
+    const fake = scripted([
+      {
+        role: "assistant",
+        tool_calls: [
+          {
+            id: "read",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: JSON.stringify({ path: "main.py" }),
+            },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        tool_calls: [
+          {
+            id: "final",
+            type: "function",
+            function: { name: finalName, arguments: JSON.stringify(payload) },
+          },
+        ],
+      },
+    ]);
+    const result = await h.service.session(
+      "manual",
+      role,
+      { phase, criteria: goodPlan.criteria },
+      fake.model,
+    );
+    expect(result).toEqual(payload);
+    expect(fake.inputs[1].tools.map((tool: any) => tool.function.name)).toEqual(
+      [finalName],
+    );
+    expect(fake.inputs[1].messages.at(-1).content).toContain(
+      "Final turn: submit your verdict/result now",
+    );
+  }
+  expect(turnBudgets("Fix a defect").roles.shadow_security).toBe(12);
+});
+
+test("reviewer read cache is confined to each reviewer, normalized path and revision", async () => {
+  const h = manual();
+  const first = await h.service.tool(
+    "manual",
+    "shadow_review",
+    "read_file",
+    { path: "./main.py" },
+    "first",
+  );
+  const repeat = await h.service.tool(
+    "manual",
+    "shadow_review",
+    "read_file",
+    { path: "main.py" },
+    "repeat",
+  );
+  const independent = await h.service.tool(
+    "manual",
+    "shadow_security",
+    "read_file",
+    { path: "main.py" },
+    "independent",
+  );
+  expect((first as any).data.content).toContain("value = 1");
+  expect((repeat as any).data).toEqual({
+    note: "already read, unchanged at rev r0:sha256:hash",
+  });
+  expect((independent as any).data.content).toContain("value = 1");
+  writeFileSync(join(h.source, "main.py"), "value = 2\n");
+  h.service.store.db
+    .query("UPDATE missions SET current_rev=? WHERE id=?")
+    .run("r1:sha256:new", "manual");
+  const revised = await h.service.tool(
+    "manual",
+    "shadow_review",
+    "read_file",
+    { path: "main.py" },
+    "revised",
+  );
+  expect((revised as any).data.content).toContain("value = 2");
+  expect(
+    h.service.store
+      .events("manual")
+      .filter((event) => event.type === "tool_call"),
+  ).toHaveLength(4);
+});
+
+test("a provider cannot execute an inspection tool on the final turn", async () => {
+  const h = manual();
+  h.service.budgetConfig = { roleTurns: { shadow_security: 1 } };
+  const fake = scripted([
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "forbidden",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "main.py" }),
+          },
+        },
+      ],
+    },
+  ]);
+  await expect(
+    h.service.session(
+      "manual",
+      "shadow_security",
+      { phase: "review" },
+      fake.model,
+    ),
+  ).rejects.toThrow("TURN_LIMIT");
+  expect(
+    h.service.store
+      .events("manual")
+      .some((event) => event.type === "tool_call"),
+  ).toBe(false);
+  expect(fake.inputs[0].tools.map((tool: any) => tool.function.name)).toEqual([
+    "submit_result",
+  ]);
+});
+
 test("turn-limit escalation identifies the role and cites recent activity", async () => {
   const env = environment();
+  const previousKey = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "test-secret-for-redaction";
+  resources.push(() => {
+    if (previousKey === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = previousKey;
+  });
   const fake = scripted([
     {
       role: "assistant",
@@ -775,13 +958,14 @@ test("turn-limit escalation identifies the role and cites recent activity", asyn
         },
       ],
     },
+    reply("last reply with test-secret-for-redaction and token=private-value"),
   ]);
   const service = new Service({
     root: join(env.root, "runtime"),
     registry: env.registry,
     runner,
     model: fake.model,
-    roleTurnLimits: { shogun: 1 },
+    roleTurnLimits: { shogun: 2 },
   });
   resources.push(() => service.close());
   const mid = service.create("tiny", env.request);
@@ -791,9 +975,24 @@ test("turn-limit escalation identifies the role and cites recent activity", asyn
     toolResult = events.find((e) => e.type === "tool_result")!;
   expect(escalation.payload.reason).toBe("TURN_LIMIT");
   expect(escalation.payload.question).toContain("shogun");
-  expect(escalation.payload.question).toContain("1-turn role budget");
+  expect(escalation.payload.question).toContain("2-turn role budget");
   expect(escalation.payload.relevant_event_ids).toContain(toolResult.id);
   expect(escalation.payload.evidence_ids).toContain(toolResult.id);
+  expect(escalation.payload.artifact_id).toMatch(/^debug_/);
+  const artifact = readFileSync(
+    join(
+      env.root,
+      "runtime",
+      "artifacts",
+      mid,
+      `${escalation.payload.artifact_id}.txt`,
+    ),
+    "utf8",
+  );
+  expect(Buffer.byteLength(artifact)).toBeLessThanOrEqual(4096);
+  expect(artifact).toContain("last reply");
+  expect(artifact).not.toContain("test-secret-for-redaction");
+  expect(artifact).not.toContain("private-value");
 });
 
 test("legacy SQLite mission budgets migrate without losing event references", async () => {

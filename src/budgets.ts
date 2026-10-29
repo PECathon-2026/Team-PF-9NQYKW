@@ -4,7 +4,7 @@ export type BudgetConfig = {
 };
 export type TurnBudgets = { mission: number; roles: Record<string, number> };
 
-/** Caps apply across the entire mission, including repairs and continuations. */
+/** Reviewer caps apply per candidate revision; all other caps apply per mission. */
 export function turnBudgets(
   request: string,
   config: BudgetConfig = {},
@@ -26,7 +26,7 @@ export function turnBudgets(
     shogun: 6,
     samurai: feature ? 22 : 16,
     shadow_review: 8,
-    shadow_security: 8,
+    shadow_security: 12,
     sentinel: 4,
     verifier: 4,
     baseline: feature ? 36 : 28,

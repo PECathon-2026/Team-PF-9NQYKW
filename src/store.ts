@@ -27,7 +27,8 @@ export class Store {
  CREATE INDEX IF NOT EXISTS evidence_rev ON evidence(mission_id,code_rev,stale);
  CREATE TABLE IF NOT EXISTS apply_intents(mission_id TEXT PRIMARY KEY, target TEXT NOT NULL, state TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), kind TEXT NOT NULL, content TEXT NOT NULL, sha256 TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS usage(mission_id TEXT NOT NULL REFERENCES missions(id), agent TEXT NOT NULL, model_turns INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(mission_id, agent));`);
+ CREATE TABLE IF NOT EXISTS usage(mission_id TEXT NOT NULL REFERENCES missions(id), agent TEXT NOT NULL, model_turns INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(mission_id, agent));
+ CREATE TABLE IF NOT EXISTS review_turns(mission_id TEXT NOT NULL REFERENCES missions(id), code_rev TEXT NOT NULL, agent TEXT NOT NULL, turns INTEGER NOT NULL DEFAULT 0 CHECK(turns >= 0), PRIMARY KEY(mission_id, code_rev, agent));`);
     // Older databases enforced the previous global 20-turn cap in the schema.
     // Rebuild the table without changing mission rows or references.
     const storedSchema = this.db
@@ -180,6 +181,13 @@ export class Store {
           payload = {
             per_agent: structuredClone(perAgent),
             total: payload.total,
+            ...(payload.budget ? { budget: payload.budget } : {}),
+            ...(payload.mission_cap
+              ? { mission_cap: payload.mission_cap }
+              : {}),
+            ...(payload.review_pass
+              ? { review_pass: payload.review_pass }
+              : {}),
           };
         } else if (payload.agent_totals && payload.totals) {
           const agent = payload.agent_totals;

@@ -54,6 +54,45 @@ export const submitPlanTool = {
   },
 };
 
+/** A final-turn tool gives every phase an explicit, schema-constrained exit. */
+export function submitResultTool(phase: Exclude<ReplyPhase, "plan">) {
+  const properties =
+    phase === "edit"
+      ? {
+          done: { type: "boolean" },
+          blocked: { type: "boolean" },
+          question: { type: "string" },
+        }
+      : {
+          findings: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                severity: {
+                  type: "string",
+                  enum: ["info", "low", "medium", "high", "critical"],
+                },
+                title: { type: "string" },
+                detail: { type: "string" },
+              },
+              required: ["severity", "title", "detail"],
+              additionalProperties: false,
+            },
+          },
+          blocked: { type: "boolean" },
+          question: { type: "string" },
+        };
+  return {
+    type: "function",
+    function: {
+      name: "submit_result",
+      description: "Submit your final result or a blocker with a question.",
+      parameters: { type: "object", properties, additionalProperties: false },
+    },
+  };
+}
+
 /** Find the first syntactically valid JSON object, respecting strings and escapes. */
 export function extractObject(content: unknown): Record<string, any> | null {
   const text = (
