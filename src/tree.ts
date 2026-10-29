@@ -73,6 +73,15 @@ export function copyTree(src: string, dst: string) {
     }
   }
 }
+/** Canonical repository-relative form after the confinement checks. */
+export function normalizedPath(
+  root: string,
+  path: string,
+  allowMissing = false,
+): string {
+  const full = confined(root, path, allowMissing);
+  return relative(realpathSync(root), full).split(sep).join("/");
+}
 export function confined(
   root: string,
   path: string,

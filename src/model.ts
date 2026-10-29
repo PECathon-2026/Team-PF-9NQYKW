@@ -38,10 +38,22 @@ export class MiniMax implements Model {
       signal,
     });
     if (!response.ok) throw Error(`MODEL_HTTP_${response.status}`);
-    const body: any = await response.json();
-    const message = body.choices?.[0]?.message;
+    const raw = await response.text();
+    let body: any;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return {
+        message: { role: "invalid", content: raw.slice(0, 16384) },
+        usage: undefined,
+      };
+    }
+    const message = body?.choices?.[0]?.message;
     if (!message || message.role !== "assistant")
-      throw Error("MODEL_RESPONSE_INVALID");
+      return {
+        message: { role: "invalid", content: raw.slice(0, 16384) },
+        usage: body?.usage,
+      };
     return { message, usage: body.usage };
   }
 }

@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { confined, entries } from "./tree";
+import { confined, entries, normalizedPath } from "./tree";
 export const allowedCommands: Record<string, string[]> = {
   pytest: ["python3", "-m", "pytest", "-q"],
 };
@@ -31,8 +31,7 @@ export function readTool(root: string, name: string, args: any): any {
       args.query.length > 256
     )
       throw Error("INVALID_ARGUMENTS");
-    const prefix = args.path || "";
-    confined(root, prefix);
+    const prefix = normalizedPath(root, args.path ?? "");
     return {
       matches: entries(root)
         .filter(
@@ -69,7 +68,9 @@ export function editTool(root: string, args: any) {
     args.new_text.length > 262144
   )
     throw Error("INVALID_ARGUMENTS");
-  const path = confined(root, args.path, true);
+  const relativePath = normalizedPath(root, args.path, true);
+  if (!relativePath) throw Error("INVALID_PATH");
+  const path = confined(root, relativePath, true);
   let old = "";
   try {
     old = readFileSync(path, "utf8");
@@ -88,5 +89,5 @@ export function editTool(root: string, args: any) {
     : args.new_text;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, next);
-  return { path: args.path, changed: next !== old };
+  return { path: relativePath, changed: next !== old };
 }

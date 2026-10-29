@@ -13,7 +13,7 @@ flowchart LR
 
 ## Run and test
 
-Install Bun, Python 3, and pytest (`python3 -m pip install --user pytest`; on externally managed Python installations add `--break-system-packages` when appropriate). Run `bun test`. The integration tests use the fixture directory and explicitly enable the unisolated development runner.
+Install Bun, Python 3, and pytest (`python3 -m pip install --user pytest`; on externally managed Python installations add `--break-system-packages` when appropriate). Run `bun install` to install dependencies, then `bun test`. The integration tests use the fixture directory and explicitly enable the unisolated development runner.
 
 `config/repositories.json` refers to the fixture manifest at `fixtures/registry.json` relative to `DEVPILOT_FIXTURES_DIR` (default `../devpilot-fixtures`). That manifest registers the exact requests, check arguments, private suite locations, and pinned suite digests. The registry and suites remain outside agent snapshots. Override the config path with `DEVPILOT_REGISTRY`, and the runtime directory with `DEVPILOT_RUNTIME`.
 
@@ -39,3 +39,5 @@ The RPC bridge supports top-level Python modules, callable functions and classes
 Agent messages and review conclusions are claims; observed test exits and scanner observations are labeled separately. The scanner detects a limited set of risky patterns and is not a comprehensive security audit. Incomplete missions escalate on restart, with recovery of a completed pointer swap. This implementation assumes one service instance and a trusted local service account; it does not provide multi-user authentication or host-level protection against a privileged administrator. Mock scripts are trusted configuration for controlled scenarios.
 
 The full event envelopes, payload fields, usage accounting, replay behavior, and pairing contract are documented in [docs/EVENTS.md](docs/EVENTS.md).
+
+For a single live Shogun plan check against the stock fixture, set `MINIMAX_API_KEY` and run `bun scripts/live-plan-check.ts`. It makes one model call and prints only whether the plan parsed and its task IDs. Malformed agent replies get one schema-specific repair attempt; rejected replies are redacted and stored in local runtime debug files referenced by artifact ID. Planning can finish through `submit_plan`; text replies are validated as a fallback. The adapter preserves complete assistant messages for tool continuations, as described in the [MiniMax tool-use guide](https://platform.minimax.io/docs/guides/text-m3-function-call).
