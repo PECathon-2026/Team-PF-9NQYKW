@@ -42,7 +42,6 @@ export function Comparison({ disabled }: { disabled: boolean }) {
   };
   return (
     <section className="card">
-      <h3>Baseline vs multi-agent</h3>
       {disabled ? <p className="muted">Unavailable in demo replay: comparison uses recorded real runs only.</p> : (
         <>
           <div className="row">

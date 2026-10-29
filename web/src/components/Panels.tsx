@@ -93,11 +93,11 @@ export function Timeline({ v, filter, setFilter }: { v: View; filter: string; se
             {lanes.map((agent) => <div className="trace-lane" key={agent}><span className="trace-agent">{agent.replace(/_/g, " ")}</span><div className="trace-track">{list.filter((e) => e.agent === agent).map((e) => <button type="button" key={e.id} className={`trace-event ${e.type === "agent_msg" ? "message" : ""} ${selected?.id === e.id ? "selected" : ""}`} style={{ left: `${duration ? ((e.ts - start) / duration) * 100 : 50}%` }} onClick={() => setSelectedId(e.id)} aria-label={`Event #${e.id}, ${e.type}, ${time(e.ts)}`} aria-pressed={selected?.id === e.id} title={`#${e.id} ${e.type}: ${summary(e)}`} />)}</div></div>)}
           </> : <p className="muted trace-empty">No events for this agent yet.</p>}
         </div>
-        <aside className="trace-detail" aria-label="Selected event detail">
-          {selected ? <><div className="trace-detail-heading"><span className="eyebrow">Selected event</span><span className="mono muted">#{selected.id}</span></div><strong>{selected.type.replace(/_/g, " ")}</strong><div className="trace-detail-meta">{selected.agent.replace(/_/g, " ")} · {time(selected.ts)} <Prov e={selected} stale={v.staleIds.has(selected.id)} unisolated={RUN_TYPES.has(selected.type) && v.unisolated.has(selected.id)} /></div><div className="esum">{summary(selected)}</div></> : <p className="muted">Select an event to inspect it.</p>}
-        </aside>
+        {selected && <aside className="trace-detail" aria-label="Selected event detail">
+          <div className="trace-detail-heading"><strong>{selected.type.replace(/_/g, " ")}</strong><span className="mono muted">#{selected.id}</span></div><div className="trace-detail-meta">{selected.agent.replace(/_/g, " ")} · {time(selected.ts)} <Prov e={selected} stale={v.staleIds.has(selected.id)} unisolated={RUN_TYPES.has(selected.type) && v.unisolated.has(selected.id)} /></div><div className="esum">{summary(selected)}</div>
+        </aside>}
       </div>
-      <div className="log-label">Event log <span>{list.length} events</span></div>
+      <div className="log-label">Event log{filter !== "all" && <span>{list.length}</span>}</div>
       <ol className="events">
         {list.map((e) => (
           <li key={e.id} className={v.staleIds.has(e.id) ? "is-stale" : ""}>
