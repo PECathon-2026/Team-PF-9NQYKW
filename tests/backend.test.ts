@@ -135,6 +135,8 @@ function fixture() {
   return { root, repo, suite, request, registry };
 }
 const localRunner: Runner = {
+  // Tests exercise approval mechanics with a trusted runner double.
+  isolation: "isolated",
   async check(snapshot, _cfg, _deadline) {
     const start = Date.now();
     const p = Bun.spawn(
@@ -250,6 +252,35 @@ describe("backend", () => {
       "a - b",
     );
     const events = a.service.store.events(mission_id);
+    const baselineEvent = events.find(
+      (e) => e.type === "test_result" && e.payload.phase === "baseline",
+    )!;
+    const planEvent = events.find((e) => e.type === "plan")!;
+    expect(baselineEvent.id).toBeLessThan(planEvent.id);
+    expect(baselineEvent.payload.outcome).toBe("failed");
+    expect(planEvent.payload.reason_event_ids).toContain(baselineEvent.id);
+    expect(planEvent.payload.tasks[0]).toMatchObject({
+      id: "fix",
+      role: "samurai",
+      status: "pending",
+    });
+    const updates = events.filter((e) => e.type === "task_update");
+    expect(updates.map((e) => e.payload.status)).toEqual([
+      "in_progress",
+      "blocked",
+      "in_progress",
+      "completed",
+    ]);
+    expect(
+      updates.every((e) => e.task_id === "fix" && e.payload.task_id === "fix"),
+    ).toBe(true);
+    expect(
+      events.every((e) =>
+        e.type === "test_result"
+          ? e.payload.isolation === "isolated"
+          : !("isolation" in e.payload),
+      ),
+    ).toBe(true);
     expect(
       events.some(
         (e) => e.type === "test_result" && e.payload.outcome === "failed",
@@ -380,7 +411,7 @@ describe("backend", () => {
           approved: true,
         })
       ).status,
-    ).toBe(202);
+    ).toBe(409);
     expect(
       (
         await post(`${a.url}/missions/${mission_id}/approve`, {
@@ -417,6 +448,20 @@ describe("backend", () => {
       ).status,
     ).toBe(202);
     expect(a.service.store.get(mission_id).state).toBe("REJECTED");
+    expect(
+      (
+        await post(`${a.url}/missions/${mission_id}/approve`, {
+          approved: false,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await post(`${a.url}/missions/${mission_id}/approve`, {
+          approved: true,
+        })
+      ).status,
+    ).toBe(409);
   }, 20000);
   test("commands, paths and symlinks are confined", () => {
     const f = fixture();
@@ -762,5 +807,194 @@ test("resumed replay presents older usage records as cumulative snapshots", asyn
     });
   } finally {
     store.close();
+  }
+});
+
+test("each mission starts from the seed and applies only to its own target", async () => {
+  const a = setup();
+  const createMission = async () => {
+    const response = await post(`${a.url}/missions`, {
+      repo: "tiny",
+      request: a.request,
+    });
+    expect(response.status).toBe(202);
+    return ((await response.json()) as any).mission_id as string;
+  };
+  const firstId = await createMission();
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      a.service.store.get(firstId).state,
+    ),
+  );
+  const first = a.service.store.get(firstId);
+  expect(first.state).toBe("AWAITING_APPROVAL");
+  expect(
+    (await post(`${a.url}/missions/${firstId}/approve`, { approved: true }))
+      .status,
+  ).toBe(202);
+  await waitFor(() => a.service.store.get(firstId).state === "COMPLETED");
+  expect(readFileSync(join(first.base_ref, "calc.py"), "utf8")).toContain(
+    "a + b",
+  );
+  expect(readFileSync(join(a.repo, "calc.py"), "utf8")).toContain("a - b");
+
+  const secondId = await createMission();
+  const second = a.service.store.get(secondId);
+  expect(second.base_ref).not.toBe(first.base_ref);
+  expect(second.base_hash).toBe(first.base_hash);
+  expect(
+    readFileSync(
+      join(a.root, "runtime", "missions", secondId, "r0", "calc.py"),
+      "utf8",
+    ),
+  ).toContain("a - b");
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      a.service.store.get(secondId).state,
+    ),
+  );
+  expect(a.service.store.get(secondId).state).toBe("AWAITING_APPROVAL");
+  expect(
+    (await post(`${a.url}/missions/${secondId}/approve`, { approved: true }))
+      .status,
+  ).toBe(202);
+  await waitFor(() => a.service.store.get(secondId).state === "COMPLETED");
+  expect(readFileSync(join(second.base_ref, "calc.py"), "utf8")).toContain(
+    "a + b",
+  );
+  expect(readFileSync(join(first.base_ref, "calc.py"), "utf8")).toContain(
+    "a + b",
+  );
+  expect(readFileSync(join(a.repo, "calc.py"), "utf8")).toContain("a - b");
+}, 20000);
+
+test("a no-op or reverted candidate never reaches approval", async () => {
+  const a = setup();
+  const script = Object.values(a.registry.tiny.requests)[0]!.mock_script;
+  const attempts = [
+    [text({ done: true })],
+    [
+      call(
+        "edit_file",
+        { path: "calc.py", old_text: "return a - b", new_text: "return a + b" },
+        "change",
+      ),
+      call(
+        "edit_file",
+        { path: "calc.py", old_text: "return a + b", new_text: "return a - b" },
+        "revert",
+      ),
+      text({ done: true }),
+    ],
+  ];
+  for (const actions of attempts) {
+    script.samurai = actions;
+    const response = await post(`${a.url}/missions`, {
+      repo: "tiny",
+      request: a.request,
+    });
+    const { mission_id } = (await response.json()) as any;
+    await waitFor(() => a.service.store.get(mission_id).state === "ESCALATED");
+    const events = a.service.store.events(mission_id);
+    expect(
+      events.some(
+        (e) => e.type === "escalation" && e.payload.reason === "NO_CHANGES",
+      ),
+    ).toBe(true);
+    expect(events.some((e) => e.type === "approval_needed")).toBe(false);
+    expect(
+      (
+        await post(`${a.url}/missions/${mission_id}/approve`, {
+          approved: true,
+        })
+      ).status,
+    ).toBe(409);
+  }
+}, 20000);
+
+test("configured browser origins receive CORS access and unknown origins are rejected", async () => {
+  const previous = process.env.DEVPILOT_ALLOWED_ORIGINS;
+  try {
+    delete process.env.DEVPILOT_ALLOWED_ORIGINS;
+    const a = setup();
+    for (const origin of ["http://localhost:5173", "http://127.0.0.1:5173"]) {
+      const preflight = await fetch(`${a.url}/missions`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: origin,
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "content-type",
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
+      const response = await fetch(`${a.url}/missions`, {
+        method: "POST",
+        headers: { Origin: origin, "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(response.status).toBe(400);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(
+        (
+          await fetch(`${a.url}/ws?mission=none`, {
+            headers: { Origin: origin },
+          })
+        ).status,
+      ).toBe(404);
+    }
+    expect(
+      (
+        await fetch(`${a.url}/missions`, {
+          headers: { Origin: "http://evil.example" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${a.url}/ws?mission=none`, {
+          headers: { Origin: "http://evil.example" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${a.url}/missions`, {
+          method: "OPTIONS",
+          headers: {
+            Origin: "http://localhost:5173",
+            "Access-Control-Request-Method": "DELETE",
+          },
+        })
+      ).status,
+    ).toBe(403);
+
+    process.env.DEVPILOT_ALLOWED_ORIGINS =
+      "http://frontend.example:4173, http://localhost:9000";
+    const custom = setup();
+    const allowed = await fetch(`${custom.url}/missions`, {
+      headers: { Origin: "http://frontend.example:4173" },
+    });
+    expect(allowed.status).toBe(404);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(
+      "http://frontend.example:4173",
+    );
+    expect(
+      (
+        await fetch(`${custom.url}/missions`, {
+          headers: { Origin: "http://frontend.example:4173.evil" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await fetch(`${custom.url}/missions`, {
+          headers: { Origin: "http://localhost:5173" },
+        })
+      ).status,
+    ).toBe(403);
+  } finally {
+    if (previous === undefined) delete process.env.DEVPILOT_ALLOWED_ORIGINS;
+    else process.env.DEVPILOT_ALLOWED_ORIGINS = previous;
   }
 });

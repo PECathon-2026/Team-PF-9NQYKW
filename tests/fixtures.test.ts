@@ -62,8 +62,10 @@ describe("supplied fixture missions", () => {
       const mission = app.service.store.get(mission_id);
       const events = app.service.store.events(mission_id);
       expect(
-        events.every(
-          (e) => e.type === "usage" || e.payload.isolation === "unisolated",
+        events.every((e) =>
+          e.type === "test_result"
+            ? e.payload.isolation === "unisolated"
+            : !("isolation" in e.payload),
         ),
       ).toBe(true);
       if (scenario === "titles") {
@@ -83,9 +85,23 @@ describe("supplied fixture missions", () => {
               e.payload.question.includes("?"),
           ),
         ).toBe(true);
+        const disabled = events.filter(
+          (e) =>
+            e.type === "tool_result" &&
+            e.payload.error?.code === "TOOL_DISABLED",
+        );
+        const escalation = events.find(
+          (e) =>
+            e.type === "escalation" && e.payload.reason === "AMBIGUOUS_REQUEST",
+        )!;
+        expect(disabled.length).toBeGreaterThan(0);
+        for (const event of disabled) {
+          expect(escalation.payload.relevant_event_ids).toContain(event.id);
+          expect(escalation.payload.evidence_ids).toContain(event.id);
+        }
         return;
       }
-      if (mission.state !== "AWAITING_APPROVAL") {
+      if (mission.state !== "ESCALATED") {
         throw Error(
           `mission escalated: ${JSON.stringify(events.filter((e) => ["escalation", "test_result"].includes(e.type)).map((e) => e.payload))}`,
         );
@@ -112,6 +128,24 @@ describe("supplied fixture missions", () => {
           (e) => e.type === "test_result" && e.payload.phase === "baseline",
         );
         expect(baseline?.payload.outcome).toBe("failed");
+        const plan = events.find((e) => e.type === "plan")!;
+        expect(baseline!.id).toBeLessThan(plan.id);
+        expect(plan.payload.reason_event_ids).toContain(baseline!.id);
+        const tasks = plan.payload.tasks as any[];
+        expect(
+          tasks.every(
+            (task) =>
+              typeof task.role === "string" && task.status === "pending",
+          ),
+        ).toBe(true);
+        for (const event of events.filter((e) => e.type === "task_update")) {
+          expect(
+            tasks.some(
+              (task) =>
+                task.id === event.task_id && task.id === event.payload.task_id,
+            ),
+          ).toBe(true);
+        }
         expect(
           events.some(
             (e) =>
@@ -127,20 +161,47 @@ describe("supplied fixture missions", () => {
           ),
         ).toBe(true);
       }
+      expect(events.some((e) => e.type === "approval_needed")).toBe(false);
+      expect(
+        events.some(
+          (e) =>
+            e.type === "escalation" &&
+            e.payload.reason === "ISOLATION_UNAVAILABLE",
+        ),
+      ).toBe(true);
       expect(
         (await post(`/missions/${mission_id}/approve`, { approved: true }))
           .status,
-      ).toBe(202);
-      await waitFor(
-        () => app.service.store.get(mission_id).state === "COMPLETED",
-      );
+      ).toBe(409);
       expect(
         readFileSync(join(mission.base_ref, `${scenario}.py`), "utf8"),
-      ).not.toBe(readFileSync(join(config.path, `${scenario}.py`), "utf8"));
+      ).toBe(readFileSync(join(config.path, `${scenario}.py`), "utf8"));
     }, 25000);
   }
   test("isolation fails closed when no container engine exists", () => {
     if (!Bun.which("docker") && !Bun.which("podman"))
       expect(() => makeRunner(false)).toThrow("SANDBOX_UNAVAILABLE");
   });
+  test("titles baseline escalation cites the disabled search result", async () => {
+    const request = Object.keys(registry.titles.requests)[0]!;
+    const response = await post("/missions", {
+      repo: "titles",
+      request,
+      mode: "baseline",
+    });
+    const { mission_id } = (await response.json()) as any;
+    await waitFor(
+      () => app.service.store.get(mission_id).state === "ESCALATED",
+    );
+    const events = app.service.store.events(mission_id);
+    const disabled = events.find(
+      (e) =>
+        e.type === "tool_result" && e.payload.error?.code === "TOOL_DISABLED",
+    )!;
+    const escalation = events.find((e) => e.type === "escalation")!;
+    expect(disabled).toBeDefined();
+    expect(escalation.payload.reason).toBe("AMBIGUOUS_REQUEST");
+    expect(escalation.payload.relevant_event_ids).toContain(disabled.id);
+    expect(escalation.payload.evidence_ids).toContain(disabled.id);
+  }, 20000);
 });

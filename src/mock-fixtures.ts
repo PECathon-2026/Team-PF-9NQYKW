@@ -19,17 +19,17 @@ export function fixtureScript(
   repo: string,
   request: string,
 ): Record<string, any[]> {
-  if (repo === "titles")
-    return {
-      shogun: [
-        call("search", { path: ".", query: "title" }, "titles-search"),
-        message({
-          blocked: true,
-          question:
-            "What changes should be made to title formatting and slug generation?",
-        }),
-      ],
-    };
+  if (repo === "titles") {
+    const clarify = [
+      call("search", { path: ".", query: "title" }, "titles-search"),
+      message({
+        blocked: true,
+        question:
+          "What changes should be made to title formatting and slug generation?",
+      }),
+    ];
+    return { shogun: clarify, baseline: clarify };
+  }
   const edits: Record<
     string,
     { path: string; old_text: string; new_text: string }[]

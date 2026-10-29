@@ -87,7 +87,12 @@ export class Store {
     verified = false,
     task: string | null = null,
   ): Event {
-    if (type !== "usage") payload = { ...payload, isolation: this.isolation };
+    if (type === "test_result")
+      payload = { ...payload, isolation: this.isolation };
+    else {
+      const { isolation: _isolation, ...rest } = payload;
+      payload = rest;
+    }
     const ts = Date.now();
     const result = this.db
       .query(
@@ -133,6 +138,7 @@ export class Store {
     const result: Event[] = [];
     for (const row of rows) {
       let payload = JSON.parse(row.payload);
+      if (row.type !== "test_result") delete payload.isolation;
       if (row.type === "usage") {
         if (payload.per_agent && payload.total) {
           perAgent = structuredClone(payload.per_agent);

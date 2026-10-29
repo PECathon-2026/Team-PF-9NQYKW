@@ -190,7 +190,27 @@ test("private failures publish test IDs and status, never hidden source or trace
         tasks: [{ id: "fix", title: request }],
       }),
     ],
-    samurai: [msg({ done: true })],
+    samurai: [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "edit",
+            type: "function",
+            function: {
+              name: "edit_file",
+              arguments: JSON.stringify({
+                path: "candidate.py",
+                old_text: "return 0",
+                new_text: "return 0  # candidate edit",
+              }),
+            },
+          },
+        ],
+      },
+      msg({ done: true }),
+    ],
     shadow_review: [msg({ findings: [] })],
     shadow_security: [msg({ findings: [] })],
   };
