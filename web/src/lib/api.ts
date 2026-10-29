@@ -3,7 +3,17 @@ import { LOCAL_CATALOG, normalizeRequests, type RequestCatalog } from "./request
 // POST /missions -> 202 {"id","state"} (doc). Accept legacy {mission_id} too.
 export async function createMission(repo: string, request: string): Promise<string> {
   const r = await fetch("/missions", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ repo, request }) });
-  if (!r.ok) throw new Error(`Could not launch the mission (HTTP ${r.status}): ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) {
+    const text = await r.text();
+    let body: { error?: unknown; message?: unknown; repo?: unknown; valid_requests?: unknown } | null = null;
+    try { body = JSON.parse(text); } catch { /* not JSON */ }
+    if (body?.error === "UNKNOWN_REQUEST") {
+      const valid = Array.isArray(body.valid_requests) ? body.valid_requests.filter((x): x is string => typeof x === "string") : [];
+      const msg = typeof body.message === "string" && body.message ? body.message : `That request isn't registered for ${typeof body.repo === "string" ? body.repo : repo}.`;
+      throw new Error(valid.length ? `${msg} Pick one of: ${valid.map((v) => `"${v}"`).join(" · ")}` : msg);
+    }
+    throw new Error(`Could not launch the mission (HTTP ${r.status}): ${text.slice(0, 200)}`);
+  }
   const j = await r.json(); const id = j.mission_id ?? j.id;
   if (typeof id !== "string") throw new Error("The server did not return a mission ID.");
   return id;
