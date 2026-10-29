@@ -5,11 +5,38 @@ export const str = (v: unknown, d = ""): string => (typeof v === "string" ? v : 
 /** Task status normalization: backend uses in_progress/completed. */
 export const col = (s: string) => (s === "in_progress" || s === "running" ? "running" : s === "completed" || s === "done" ? "done" : s === "blocked" ? "blocked" : s === "ready" ? "ready" : "pending");
 export const isResolved = (a: string) => a === "resolve" || a === "resolved";
+/** Only the orchestrator emits tamper findings (docs/EVENTS.md); a malformed or model-sourced field is ignored. */
+export function tamperOf(e: MissionEvent): Tamper | undefined {
+  const t = e.payload.tamper as Record<string, unknown> | undefined;
+  if (e.agent !== "orchestrator" || !t || typeof t !== "object" || typeof t.path !== "string") return undefined;
+  return { tool: str(t.tool, "tool"), path: t.path, code: str(t.code, "REFUSED") };
+}
+/** "tried to edit tests/test_pricing.py", "tried to escape the workspace via ../x". */
+export function tamperText(t: Tamper): string {
+  if (t.code === "INVALID_PATH") return `tried to escape the workspace via ${t.path}`;
+  const verb = /edit|write|create|delete|patch/.test(t.tool) ? "edit" : t.tool === "read_file" ? "read" : t.tool === "list_dir" ? "list" : t.tool === "search" ? "search" : `use ${t.tool} on`;
+  return `tried to ${verb} ${t.path}`;
+}
+/** Open findings that count toward the gate and approval totals; blocked tamper attempts never do. */
+export const isOpen = (f: Finding) => !f.tamper && !isResolved(f.action);
+export const blocksGate = (f: Finding) => f.blocking && isOpen(f);
 export const approved = (e?: MissionEvent) => !!e && (e.payload.decision === true || e.payload.decision === "approved");
 
 export interface Task { id: string; title: string; role: string; status: string; deps: string[] }
 export interface CheckRow { key: string; kind: "check" | "acceptance"; outcome: string; code_rev: string | null; event: MissionEvent; attempts: number; stale: boolean; duration?: number; exit?: number }
-export interface Finding { id: string; agent: string; severity: string; action: string; description: string; blocking: boolean; resolution: string; sentBack: boolean; code_rev: string | null; stale: boolean; eventId: number; verified: boolean }
+export interface Tamper { tool: string; path: string; code: string }
+export interface Finding {
+  id: string; agent: string; severity: string; action: string; description: string; blocking: boolean; resolution: string; sentBack: boolean; code_rev: string | null; stale: boolean; eventId: number; verified: boolean;
+  /** Refused file-tool call flagged by the orchestrator; informational, never blocks. `actor` made the call. */
+  tamper?: Tamper; actor?: string;
+  /** A blocking critical the reviewer omitted from a later report, kept open. */
+  carriedForward: boolean;
+  /** Why an "addressed" claim on a critical was rejected; the finding stays blocking. */
+  unacceptedResolution: string;
+  /** File/line the reviewer cited when its addressed claim was accepted. */
+  resolutionEvidence?: { path: string; line?: number };
+  evidenceIds: number[];
+}
 export interface Usage { total: UsageCount; per_agent: Record<string, UsageCount>; pass_turns?: Record<string, number> }
 export interface EvidenceCitation { id: number; event?: MissionEvent; stale: boolean }
 
@@ -95,7 +122,9 @@ export function stageState(input: MissionEvent[], agent: Agent, now: number): St
 
 export interface View {
   events: MissionEvent[]; staleIds: Set<number>; staleBy: Map<number, MissionEvent>;
-  started?: MissionEvent; plan?: MissionEvent; tasks: Task[]; checks: CheckRow[]; findings: Finding[];
+  started?: MissionEvent; plan?: MissionEvent; tasks: Task[]; checks: CheckRow[];
+  /** Reviewer and scanner findings; `tampers` holds blocked tamper attempts, which never count as open. */
+  findings: Finding[]; tampers: Finding[];
   diffs: MissionEvent[]; currentRev: string | null; pendingApproval?: MissionEvent; approvalResult?: MissionEvent; citations: EvidenceCitation[];
   escalations: MissionEvent[]; done?: MissionEvent; state: string; gate: { ok: boolean; reasons: string[] };
   usage?: Usage; budget?: Record<string, number>; deadline?: number; pausedRemainingMs?: number; pairedMissionId?: string; unisolated: Set<number>;
@@ -112,6 +141,7 @@ export function derive(input: MissionEvent[]): View {
   let usage: View["usage"]; let budget: View["budget"]; const unisolated = new Set<number>();
   let toolFailures = 0; let lastStaleId = 0;
 
+  const eventById = new Map(events.map((event) => [event.id, event]));
   for (const e of events) {
     const p = e.payload;
     if (isUnisolated(e)) unisolated.add(e.id);
@@ -139,11 +169,19 @@ export function derive(input: MissionEvent[]): View {
       case "finding": {
         const id = str(p.finding_id, `f${e.id}`); const prev = findingsMap.get(id);
         const action = str(p.action, "opened");
+        const tamper = tamperOf(e) ?? prev?.tamper; const evidenceIds = ids(p.evidence_event_ids);
+        const re = p.resolution_evidence as Record<string, unknown> | undefined;
+        const resolutionEvidence = re && typeof re === "object" && typeof re.path === "string" ? { path: re.path, line: typeof re.line === "number" ? re.line : undefined } : prev?.resolutionEvidence;
+        // The refused tool_result names the agent that attempted the call.
+        const actor = tamper ? evidenceIds.map((i) => eventById.get(i)).find((x) => x?.type === "tool_result")?.agent ?? prev?.actor : undefined;
         findingsMap.set(id, {
           id, agent: prev?.agent ?? e.agent, severity: str(p.severity, prev?.severity ?? "info"), action,
           description: [str(p.title), str(p.detail ?? p.description)].filter(Boolean).join(" — ") || prev?.description || "", blocking: typeof p.blocking === "boolean" ? p.blocking : prev?.blocking ?? false,
           resolution: str(p.resolution, prev?.resolution ?? ""), sentBack: (prev?.sentBack ?? false) || action === "sent_back" || p.sent_back === true,
           code_rev: e.code_rev, stale: false, eventId: e.id, verified: e.verified,
+          ...(tamper ? { tamper, actor, blocking: false } : {}),
+          carriedForward: p.carried_forward === true, unacceptedResolution: str(p.unaccepted_resolution), resolutionEvidence,
+          evidenceIds: evidenceIds.length ? evidenceIds : prev?.evidenceIds ?? [],
         });
         break;
       }
@@ -168,9 +206,9 @@ export function derive(input: MissionEvent[]): View {
       stale: staleIds.has(last.id) || (!!currentRev && last.code_rev !== currentRev),
       duration: typeof pl.duration === "number" ? pl.duration : typeof pl.duration_ms === "number" ? pl.duration_ms : undefined, exit: typeof pl.exit_code === "number" ? pl.exit_code : undefined };
   });
-  const findings = [...findingsMap.values()].map((f) => ({ ...f, stale: staleIds.has(f.eventId) }));
+  const allFindings = [...findingsMap.values()].map((f) => ({ ...f, stale: staleIds.has(f.eventId) }));
+  const findings = allFindings.filter((f) => !f.tamper); const tampers = allFindings.filter((f) => f.tamper);
   const approval = pendingApproval ?? approvalResult;
-  const eventById = new Map(events.map((event) => [event.id, event]));
   const citations: EvidenceCitation[] = ids(approval?.payload.evidence_ids ?? approval?.payload.evidence_event_ids).map((id) => {
     const event = eventById.get(id);
     return { id, event, stale: staleIds.has(id) || !!(event && approval?.code_rev && event.code_rev !== approval.code_rev) };
@@ -201,7 +239,7 @@ export function derive(input: MissionEvent[]): View {
       else if (c.outcome !== "passed") reasons.push(`${c.key} ${c.outcome}`);
       if (c.stale) reasons.push(`${c.key} is stale`);
     }
-    if (findings.some((f) => f.blocking && !isResolved(f.action))) reasons.push("A blocking finding is still open");
+    if (findings.some(blocksGate)) reasons.push("A blocking finding is still open");
   }
 
   const state = done ? str(done.payload.status, "DONE").toUpperCase()
@@ -212,6 +250,6 @@ export function derive(input: MissionEvent[]): View {
   const fixCycles = new Set(events.filter((e) => e.type === "agent_msg"
     && ["orchestrator", "shadow_review", "shadow_security", "verifier"].includes(e.agent)
     && ["samurai", "baseline"].includes(str(e.payload.to ?? e.payload.recipient))).map((e) => e.id)).size;
-  return { events, staleIds, staleBy, started, plan, tasks: [...tasks.values()], checks, findings, diffs, currentRev, pendingApproval, approvalResult, citations, escalations, done, state, gate: { ok: reasons.length === 0, reasons }, usage, budget, ...deriveDeadline(events), unisolated, pairedMissionId: str(started?.payload.paired_mission_id) || str(started?.payload.baseline_of) || undefined, fixCycles, toolFailures };
+  return { events, staleIds, staleBy, started, plan, tasks: [...tasks.values()], checks, findings, tampers, diffs, currentRev, pendingApproval, approvalResult, citations, escalations, done, state, gate: { ok: reasons.length === 0, reasons }, usage, budget, ...deriveDeadline(events), unisolated, pairedMissionId: str(started?.payload.paired_mission_id) || str(started?.payload.baseline_of) || undefined, fixCycles, toolFailures };
 }
 export const short = (rev: string | null | undefined) => (rev ? (rev.length > 18 ? rev.slice(0, 18) + "…" : rev) : "—");

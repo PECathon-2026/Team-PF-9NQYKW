@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowRight, Check, ChevronRight, CirclePlay, Columns2, Command, FileDiff, GitBranch, LayoutDashboard, ListChecks, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck, X } from "lucide-react";
 import { approve, createMission, fetchRequests, subscribe } from "./lib/api";
-import { col, derive, isResolved, short } from "./lib/derive";
+import { col, derive, isOpen, short } from "./lib/derive";
 import { assertValid, decisionEvents, stockScript, titlesScript } from "./lib/replay";
 import { LOCAL_CATALOG, REQUESTS, type RequestCatalog } from "./lib/requests";
 import { errorText, eventLabel } from "./lib/labels";
 import { REPOS, type MissionEvent, type RepoId } from "./lib/types";
-import { Approval, DiffViewer, Escalation, Evidence, Header, TaskBoard, Timeline, WhyApprove } from "./components/Panels";
+import { Approval, DiffViewer, Escalation, Evidence, Header, Tampers, TaskBoard, Timeline, WhyApprove } from "./components/Panels";
 import { Comparison } from "./components/Comparison";
 import { CAST, Dojo, type FigureAgent } from "./components/Dojo";
 import { Background } from "./components/Background";
@@ -35,7 +35,7 @@ export default function App() {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [route, setRoute] = useState(location.hash === "#/compare" ? "compare" : "mission");
-  const [tab, setTab] = useState<Tab>("overview"); const [filter, setFilter] = useState("all");
+  const [tab, setTab] = useState<Tab>("overview"); const [filter, setFilter] = useState("all"); const [focus, setFocus] = useState<number | null>(null);
   const [collapsed, setCollapsed] = useState(false); const [palette, setPalette] = useState(false); const [query, setQuery] = useState("");
   const timers = useRef<number[]>([]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t); }, []);
@@ -68,16 +68,17 @@ export default function App() {
     const r = await fetch(`/missions/${encodeURIComponent(missionId ?? "")}/artifacts/${encodeURIComponent(a)}`, { credentials: "same-origin" });
     if (!r.ok) throw new Error(String(r.status)); return r.text();
   }, [missionId]);
-  const newMission = () => { stopReplay(); setMissionId(null); setEvents([]); setErr(""); setFilter("all"); navigate("mission"); };
+  const newMission = () => { stopReplay(); setMissionId(null); setEvents([]); setErr(""); setFilter("all"); setFocus(null); navigate("mission"); };
   const chooseRepo = (r: RepoId) => { if (r !== repo) newMission(); setRepo(r); setRequest(catalog[r][0] ?? REQUESTS[r]); navigate("mission"); };
   const registered = catalog[repo]; const custom = !registered.includes(request);
-  const chooseAgent = (id: FigureAgent) => { setFilter((current) => current === id ? "all" : id); setTab("activity"); navigate("mission"); };
+  const chooseAgent = (id: FigureAgent) => { setFilter((current) => current === id ? "all" : id); setFocus(null); setTab("activity"); navigate("mission"); };
+  const cite = (id: number) => { setFilter("all"); setFocus(id); setTab("activity"); };
   const toggleReplay = () => { stopReplay(); setEvents([]); setMissionId(null); setMode((m) => m === "live" ? "replay" : "live"); navigate("mission"); };
   const commands = [
-    ...TABS.map((t) => ({ group: "Go to", label: t.label, icon: t.icon, run: () => { navigate("mission"); setTab(t.id); } })),
+    ...TABS.map((t) => ({ group: "Go to", label: t.label, icon: t.icon, run: () => { navigate("mission"); setTab(t.id); setFocus(null); } })),
     { group: "Go to", label: "Compare runs", icon: Columns2, run: () => navigate("compare") },
     { group: "Actions", label: "New mission", icon: Plus, run: newMission },
-    ...CAST.map((a) => ({ group: "Agents", label: a.name, icon: Activity, run: () => { setFilter(a.id); setTab("activity"); navigate("mission"); } })),
+    ...CAST.map((a) => ({ group: "Agents", label: a.name, icon: Activity, run: () => { setFilter(a.id); setFocus(null); setTab("activity"); navigate("mission"); } })),
     ...REPOS.map((r) => ({ group: "Repositories", label: r, icon: GitBranch, run: () => chooseRepo(r) })),
     { group: "Actions", label: mode === "live" ? "Start demo replay" : "Exit demo replay", icon: CirclePlay, run: toggleReplay },
   ].filter((c) => `${c.group} ${c.label}`.toLowerCase().includes(query.toLowerCase()));
@@ -99,11 +100,11 @@ export default function App() {
         {missionId && <div className="mission-top"><Header v={v} mode={mode} conn={conn} now={now} /></div>}
         {!missionId ? <div className="content launch-page view-enter"><section className="card launch"><h2 className="launch-heading">New mission</h2><label className="field-label" htmlFor="repo-select">Repository</label><select id="repo-select" value={repo} onChange={(e) => chooseRepo(e.target.value as RepoId)}>{REPOS.map((r) => <option key={r}>{r}</option>)}</select><label className="field-label" htmlFor="request-select">Registered request</label><select id="request-select" value={custom ? "" : request} disabled={mode === "replay"} onChange={(e) => setRequest(e.target.value)}>{custom && <option value="" disabled>Custom request</option>}{registered.map((r) => <option key={r} value={r} title={r}>{r.length > 90 ? `${r.slice(0, 89)}…` : r}</option>)}</select><label className="field-label" htmlFor="mission-request">Request</label><textarea id="mission-request" value={request} onChange={(e) => setRequest(e.target.value)} rows={4} readOnly={mode === "replay"} /><div className="launch-actions"><button className="primary" disabled={busy || !request.trim() || (mode === "replay" && repo !== "stock" && repo !== "titles")} onClick={start}>{mode === "replay" ? "Start replay" : "Launch mission"} <ArrowRight size={15} /></button></div>{mode === "replay" && repo !== "stock" && repo !== "titles" && <p className="muted small launch-note">Demo replay is available for stock and titles.</p>}{err && <p className="fail">{err}</p>}</section></div> : <>
           <Dojo v={v} now={now} selected={filter} onSelect={chooseAgent} />
-          <div className="tab-bar" role="tablist" aria-label="Mission sections">{TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "section-tab active" : "section-tab"} onClick={() => setTab(t.id)}><t.icon size={15} />{t.label}{t.id === "activity" && <span className="tab-count">{v.events.length}</span>}</button>)}</div>
+          <div className="tab-bar" role="tablist" aria-label="Mission sections">{TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "section-tab active" : "section-tab"} onClick={() => { setTab(t.id); setFocus(null); }}><t.icon size={15} />{t.label}{t.id === "activity" && <span className="tab-count">{v.events.length}</span>}</button>)}</div>
           <div className={`content tab-content ${pending ? "has-approval" : ""}`}><Escalation v={v} />{err && <p className="fail error-banner">{err}</p>}
             <div className="tab-panel" key={tab} role="tabpanel">
-              {tab === "overview" && <><div className="overview-summary"><div><span>Tasks done</span><strong>{v.tasks.filter((t) => col(t.status) === "done").length} / {v.tasks.length}</strong></div><div><span>Checks passed</span><strong>{v.checks.filter((c) => c.outcome === "passed" && !c.stale).length} / {v.checks.length}</strong></div><div><span>Findings</span><strong>{v.findings.length} total · {v.findings.filter((f) => !isResolved(f.action)).length} open</strong></div><div><span>Latest event</span><strong>{v.events.length ? eventLabel(v.events[v.events.length - 1].type) : "—"}</strong></div></div><TaskBoard v={v} /></>}
-              {tab === "evidence" && <Evidence v={v} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <><Approval v={v} onDecide={decide} busy={busy} error="" /><WhyApprove v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} /></> : <section className="card"><h3>Approval</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} />}</>}
+              {tab === "overview" && <><div className="overview-summary"><div><span>Tasks done</span><strong>{v.tasks.filter((t) => col(t.status) === "done").length} / {v.tasks.length}</strong></div><div><span>Checks passed</span><strong>{v.checks.filter((c) => c.outcome === "passed" && !c.stale).length} / {v.checks.length}</strong></div><div><span>Findings</span><strong>{v.findings.length} total · {v.findings.filter(isOpen).length} open</strong></div><div><span>Latest event</span><strong>{v.events.length ? eventLabel(v.events[v.events.length - 1].type) : "—"}</strong></div></div><Tampers v={v} onCite={cite} compact /><TaskBoard v={v} /></>}
+              {tab === "evidence" && <Evidence v={v} onCite={cite} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} focus={focus} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <><Approval v={v} onDecide={decide} busy={busy} error="" /><WhyApprove v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} /></> : <section className="card"><h3>Approval</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} onCite={cite} />}</>}
             </div>
           </div>
           {pending && <div className="approval-bar"><div className="approval-symbol"><ShieldCheck size={18} /></div><div className="approval-copy"><strong>{v.gate.ok ? "Ready for your approval" : "Approval requested"} <span title={v.pendingApproval?.code_rev ?? undefined}>{short(v.pendingApproval?.code_rev)}</span></strong>{!v.gate.ok && <small>{v.gate.reasons.join(" · ")}</small>}</div><button onClick={() => setTab("approval")}>Review</button><button disabled={busy} onClick={() => decide(false)}>Reject</button><button className="primary" disabled={!v.gate.ok || busy} title={!v.gate.ok ? v.gate.reasons.join(" · ") : ""} onClick={() => decide(true)}><Check size={15} /> Approve</button></div>}

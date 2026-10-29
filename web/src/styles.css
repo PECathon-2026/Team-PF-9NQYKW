@@ -186,6 +186,19 @@ h4{margin:28px 0 10px;font-size:10px;font-weight:600;letter-spacing:.14em;text-t
 .finding>div{margin-top:5px}
 .sev{font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#c8917d;margin-right:8px}
 .mono-row td:not(:first-child){font-family:var(--mono);font-size:11px}
+/* Blocked tamper attempts: informational, never blocking */
+.tamper-callout{margin:0 0 14px;padding:12px 16px;background:rgba(59,38,30,.82);border:1px solid #7a4a3a;border-left:3px solid #d0763f;border-radius:7px;font-size:12px;animation:fade-up var(--med) var(--ease) both}
+.card .tamper-callout{margin:18px 0 4px}
+.tamper-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.tamper-head strong{color:#f0c9a8;font-weight:600}
+.tamper-callout ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.tamper-callout.compact ul{display:flex;flex-wrap:wrap;gap:6px 14px}
+.tamper-chip{display:inline-block;padding:2px 8px;border:1px solid #b9603f;border-radius:999px;background:rgba(201,94,58,.18);color:#f3c3a3;font-size:11px;font-weight:550;overflow-wrap:anywhere}
+.tamper-code{font-size:10px;color:#e0a27d}
+.cites{display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:4px}
+.cite-link{padding:0;border:0;background:none;color:#e0b49c;font-size:10.5px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.cite-link:hover,.cite-link:focus-visible{color:var(--ink)}
+.events li.is-focus{background:rgba(201,94,58,.12);outline:1px solid rgba(201,94,58,.45)}
 
 /* Activity */
 .tl{min-height:55vh}

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MissionEvent } from "../lib/types";
-import { agentTurns, approved, buildPatch, col, isResolved, revisionDiffs, secondsLeft, short, str, type View } from "../lib/derive";
+import { agentTurns, approved, buildPatch, col, isOpen, isResolved, revisionDiffs, secondsLeft, short, str, tamperOf, tamperText, type Finding, type View } from "../lib/derive";
 import { CONNECTION, agentName, eventLabel, humanize, plural, stateLabel } from "../lib/labels";
 
 // All dynamic text is rendered as React text nodes (never innerHTML).
@@ -79,8 +79,10 @@ export function TaskBoard({ v }: { v: View }) {
 
 // Only show the unisolated tag where a runner actually executed something.
 const RUN_TYPES = new Set(["test_result", "tool_result"]);
-export function Timeline({ v, filter, setFilter }: { v: View; filter: string; setFilter: (filter: string) => void }) {
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: string; setFilter: (filter: string) => void; focus?: number | null }) {
+  const [selectedId, setSelectedId] = useState<number | null>(focus ?? null);
+  const focusRef = useRef<HTMLLIElement>(null);
+  useEffect(() => { focusRef.current?.scrollIntoView({ block: "center" }); }, []);
   const agents = Array.from(new Set(["all", ...(filter !== "all" ? [filter] : []), ...v.events.map((e) => e.agent)]));
   const list = v.events.filter((e) => filter === "all" || e.agent === filter);
   const selected = list.find((e) => e.id === selectedId) ?? list[list.length - 1];
@@ -107,7 +109,7 @@ export function Timeline({ v, filter, setFilter }: { v: View; filter: string; se
       <div className="log-label">Event log{filter !== "all" && <span>{list.length}</span>}</div>
       <ol className="events">
         {list.map((e) => (
-          <li key={e.id} className={v.staleIds.has(e.id) ? "is-stale" : ""}>
+          <li key={e.id} ref={e.id === focus ? focusRef : undefined} className={`${v.staleIds.has(e.id) ? "is-stale" : ""}${e.id === focus ? " is-focus" : ""}`}>
             <span className="muted mono">#{e.id} {time(e.ts)}</span>
             <span className={`agent a-${e.agent}`} title={e.agent}>{agentName(e.agent)}</span>
             <span className="etype" title={e.type}>{eventLabel(e.type)}</span>
@@ -131,7 +133,7 @@ export function summary(e: MissionEvent): string {
     case "tool_call": return `${str(p.tool)}(${JSON.stringify(p.arguments ?? p.args ?? {})})`;
     case "tool_result": { if (p.ok === false) return `Error ${str((p.error as Record<string, unknown> | undefined)?.code ?? p.error, "unknown")}`; const d = p.data as Record<string, unknown> | undefined; const s = d ? (typeof d.content === "string" ? d.content : JSON.stringify(d)) : str(p.result, "ok"); return s; }
     case "test_result": { const cr = Array.isArray(p.criteria) ? (p.criteria as { passed?: boolean }[]) : null; return `${p.phase === "baseline" ? "Baseline · " : ""}${str(p.suite_id ?? p.check_id)} ${str(p.outcome)}${p.exit_code !== undefined ? ` (exit ${str(p.exit_code)})` : ""}${cr ? ` · ${cr.filter((c) => c.passed).length}/${cr.length} criteria` : ""}${cite("cause_event_ids")}`; }
-    case "finding": return `${str(p.finding_id)} ${isResolved(str(p.action)) ? "resolved" : humanize(str(p.action)).toLowerCase()} · ${str(p.severity)} · ${str(p.title ?? p.description ?? p.resolution)}${cite("evidence_event_ids")}`;
+    case "finding": { const t = tamperOf(e); if (t) return `Blocked: ${tamperText(t)} (${t.code})${cite("evidence_event_ids")}`; return `${str(p.finding_id)} ${isResolved(str(p.action)) ? "resolved" : humanize(str(p.action)).toLowerCase()} · ${str(p.severity)} · ${str(p.title ?? p.description ?? p.resolution)}${p.carried_forward === true ? " · carried forward" : ""}${p.unaccepted_resolution ? " · resolution not accepted" : ""}${cite("evidence_event_ids")}`; }
     case "diff": return `${short(str(p.revision))}: ${Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : ""}`;
     case "approval_needed": case "approval_requested": return `Revision ${short(e.code_rev)}${cite("evidence_ids")}`;
     case "approval_result": return approved(e) ? "Approved" : "Rejected";
@@ -142,7 +144,37 @@ export function summary(e: MissionEvent): string {
   }
 }
 
-export function Evidence({ v }: { v: View }) {
+/** Event-id links; `onCite` opens the event in the activity log. */
+export function CiteLinks({ ids, onCite }: { ids: number[]; onCite?: (id: number) => void }) {
+  if (!ids.length) return null;
+  return <span className="cites">{ids.map((id) => onCite
+    ? <button type="button" key={id} className="cite-link mono" onClick={() => onCite(id)} title={`Show event #${id} in Activity`}>#{id}</button>
+    : <span key={id} className="mono muted">#{id}</span>)}</span>;
+}
+
+/** A refused file-tool call. The refusal is the outcome; it never blocks approval. */
+export function TamperChip({ f }: { f: Finding }) {
+  if (!f.tamper) return null;
+  return <span className="tamper-chip" title={f.description}>Blocked: {tamperText(f.tamper)}</span>;
+}
+
+export function Tampers({ v, onCite, compact }: { v: View; onCite?: (id: number) => void; compact?: boolean }) {
+  if (!v.tampers.length) return null;
+  return (
+    <section className={`tamper-callout${compact ? " compact" : ""}`} aria-label="Tamper attempts blocked">
+      <div className="tamper-head"><strong>Tamper attempts blocked ({v.tampers.length})</strong><span className="muted small">Refused by the service. Informational; these do not block approval.</span></div>
+      <ul>{v.tampers.map((f) => (
+        <li key={f.id} className={f.stale ? "is-stale" : ""}>
+          <TamperChip f={f} /> <code className="tamper-code" title="Refusal code">{f.tamper!.code}</code>
+          {f.actor && <span className="muted small"> {agentName(f.actor)}</span>}
+          {!compact && <span className="muted small"> · {f.tamper!.tool}</span>} <CiteLinks ids={f.evidenceIds.length ? f.evidenceIds : [f.eventId]} onCite={onCite} />
+        </li>
+      ))}</ul>
+    </section>
+  );
+}
+
+export function Evidence({ v, onCite }: { v: View; onCite?: (id: number) => void }) {
   return (
     <section className="card">
       <h3>Evidence</h3>
@@ -161,6 +193,7 @@ export function Evidence({ v }: { v: View }) {
           ))}
         </tbody>
       </table>
+      <Tampers v={v} onCite={onCite} />
       <h4>Findings</h4>
       {v.findings.length === 0 && <p className="muted">No findings. A clean review is a model conclusion, not proof.</p>}
       {v.findings.map((f) => (
@@ -169,9 +202,14 @@ export function Evidence({ v }: { v: View }) {
           <strong className="mono">{f.id}</strong> <span className="muted">{agentName(f.agent)}{f.blocking ? " · Blocking" : ""}</span>
           <span key={f.action} className={isResolved(f.action) ? "pass cut" : "warn"}> · {isResolved(f.action) ? "Resolved" : "Open"}</span>
           {f.sentBack && <span className="tag back">sent back to Samurai</span>}
+          {f.carriedForward && <span className="tag back" title="The reviewer omitted this blocking critical from its later report; it stays open until resolved with evidence">carried forward</span>}
+          {f.unacceptedResolution && <span className="tag back" title={f.unacceptedResolution}>resolution not accepted</span>}
           <Prov e={f} stale={f.stale} unisolated={v.unisolated.has(f.eventId)} />
           <div>{f.description}</div>
+          {f.unacceptedResolution && <div className="fail small">Resolution not accepted: {f.unacceptedResolution}{f.blocking ? " Still blocking." : ""}</div>}
+          {f.resolutionEvidence && <div className="muted small">Resolution evidence: <code>{f.resolutionEvidence.path}{f.resolutionEvidence.line !== undefined ? `:${f.resolutionEvidence.line}` : ""}</code></div>}
           {f.resolution && <div className="muted small">Resolution: {f.resolution}</div>}
+          {f.evidenceIds.length > 0 && <div className="muted small">Cited events <CiteLinks ids={f.evidenceIds} onCite={onCite} /></div>}
         </div>
       ))}
     </section>
@@ -215,7 +253,7 @@ export function Approval({ v, onDecide, busy, error }: { v: View; onDecide: (a: 
         <span>Tree</span><code>{str(a.payload.tree_hash)}</code>
         <span>Base</span><code>{str(a.payload.base_hash ?? v.started?.payload.base_hash)}</code>
         <span>Evidence</span><span>{v.citations.map((c, i) => <span key={c.id} className={c.event ? undefined : "fail"}>{i ? " " : ""}#{c.id}{!c.event ? " (missing)" : c.stale ? " (stale)" : ""}</span>)}</span>
-        <span>Open findings</span><span>{v.findings.filter((f) => !isResolved(f.action)).length}</span>
+        <span>Open findings</span><span>{v.findings.filter(isOpen).length}{v.tampers.length ? <span className="muted small"> · {plural(v.tampers.length, "tamper attempt")} blocked (not counted)</span> : null}</span>
       </div>}
       {v.approvalResult ? <p className="decision">Decision recorded: <strong>{approved(v.approvalResult) ? "Approved" : "Rejected"}</strong></p> : (
         <>
@@ -236,7 +274,7 @@ function cited(e: MissionEvent): { name: string; outcome: string; ok?: boolean }
   const p = e.payload;
   switch (e.type) {
     case "test_result": return { name: str(p.suite_id ?? p.check_id, "check"), outcome: cap(str(p.outcome, "unknown")), ok: p.outcome === "passed" };
-    case "finding": return { name: str(p.finding_id, `#${e.id}`), outcome: `${humanize(str(p.action, "open"))} · ${str(p.severity, "info")}`, ok: isResolved(str(p.action)) || p.blocking === false };
+    case "finding": { const t = tamperOf(e); if (t) return { name: `Blocked: ${tamperText(t)}`, outcome: `Refused · ${t.code}`, ok: true }; return { name: str(p.finding_id, `#${e.id}`), outcome: `${humanize(str(p.action, "open"))} · ${str(p.severity, "info")}`, ok: isResolved(str(p.action)) || p.blocking === false }; }
     case "diff": return { name: Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : "Revision", outcome: "Revision recorded" };
     case "tool_result": return { name: str(p.call_id, "tool"), outcome: p.ok === false ? "Error" : "OK", ok: p.ok !== false };
     default: return { name: eventLabel(e.type), outcome: "—" };

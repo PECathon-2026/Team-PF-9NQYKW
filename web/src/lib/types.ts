@@ -30,5 +30,5 @@ export const isEvent = (x: unknown): x is MissionEvent => {
     && (e.isolation === undefined || typeof e.isolation === "string")
     && (e.type !== "usage" || isUsagePayload(e.payload));
 };
-export const REPOS = ["cart","stats","stock","notes","titles"] as const;
+export const REPOS = ["cart","stats","stock","notes","titles","cheat"] as const;
 export type RepoId = (typeof REPOS)[number];

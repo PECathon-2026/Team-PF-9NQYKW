@@ -32,6 +32,7 @@ export function Comparison({ disabled }: { disabled: boolean }) {
       ["Project checks", v.checks.filter((c) => c.kind === "check" && c.event.verified).map((c) => `${c.key}: ${c.outcome}`).join(", ") || "None"],
       ["Acceptance suite", v.checks.filter((c) => c.kind === "acceptance" && c.event.verified).map((c) => `${c.key}: ${c.outcome}`).join(", ") || "None"],
       ["Open findings", String(v.findings.filter((f) => f.action !== "resolve" && f.action !== "resolved").length)],
+      ["Tamper attempts blocked", String(v.tampers.length)],
       ["Fix cycles", String(v.fixCycles)],
       ["Tool failures", String(v.toolFailures)],
       ["Model turns", v.usage ? String(v.usage.total.turns) : "Not reported"],

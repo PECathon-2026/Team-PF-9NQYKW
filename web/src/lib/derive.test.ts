@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { agentTurns, buildPatch, col, derive, deriveDeadline, revisionDiffs, secondsLeft, stageState } from "./derive";
-import { LOCAL_CATALOG, normalizeRequests } from "./requests";
-import type { Agent, EventType, MissionEvent } from "./types";
+import { agentTurns, blocksGate, buildPatch, col, derive, deriveDeadline, isOpen, revisionDiffs, secondsLeft, stageState, tamperText } from "./derive";
+import { agentName } from "./labels";
+import { LOCAL_CATALOG, REQUESTS, normalizeRequests } from "./requests";
+import { REPOS, type Agent, type EventType, type MissionEvent } from "./types";
 
 const event = (id: number, type: EventType, agent: Agent, payload: Record<string, unknown> = {}): MissionEvent => ({
   id, ts: id * 1000, mission_id: "mission", type, agent, task_id: null, code_rev: null, verified: true, payload,
@@ -173,7 +174,94 @@ describe("approval evidence", () => {
   });
 });
 
+describe("tamper findings", () => {
+  const R = "r1:sha256:tree";
+  // Shape emitted by service.ts for a refused PROTECTED_FILE / INVALID_PATH file-tool call.
+  const refused = (id: number, call: string, code: string) => at(event(id, "tool_result", "samurai", { call_id: call, ok: false, error: { code } }), { code_rev: R });
+  const tamper = (id: number, cite: number, tool: string, path: string, code: string) => at(event(id, "finding", "orchestrator", {
+    finding_id: `f_t${id}`, severity: "info", blocking: false, action: "open",
+    title: code === "PROTECTED_FILE" ? "Protected file edit blocked" : "Path escape blocked",
+    detail: `samurai ${tool} on ${path} was refused (${code}).`, tamper: { tool, path, code }, evidence_event_ids: [cite],
+  }), { code_rev: R });
+  const mission = (extra: MissionEvent[]) => [
+    event(1, "mission_started", "orchestrator", { base_hash: "base", deadline: 100000 }),
+    refused(2, "c1", "PROTECTED_FILE"), tamper(3, 2, "edit_file", "tests/test_pricing.py", "PROTECTED_FILE"),
+    refused(4, "c2", "INVALID_PATH"), tamper(5, 4, "read_file", "../../private/acceptance/cheat/test_acceptance_cheat.py", "INVALID_PATH"),
+    at(event(6, "diff", "samurai", { base_hash: "base", revision: R, changed_paths: ["pricing.py"], text: "+fix" }), { code_rev: R }),
+    at(event(7, "test_result", "sentinel", { check_id: "cheat.pytest", outcome: "passed", exit_code: 0, isolation: "isolated" }), { code_rev: R }),
+    ...extra,
+    at(event(20, "approval_needed", "orchestrator", { approval_id: "ap", evidence_ids: [6, 7], tree_hash: "tree" }), { code_rev: R }),
+  ];
+
+  test("are kept apart from findings and do not block the gate or count as open", () => {
+    const v = derive(mission([]));
+    expect(v.tampers.map((f) => f.id)).toEqual(["f_t3", "f_t5"]);
+    expect(v.findings).toEqual([]);
+    expect(v.tampers.some((f) => isOpen(f) || blocksGate(f))).toBe(false);
+    expect(v.gate).toEqual({ ok: true, reasons: [] });
+  });
+
+  test("ignore a blocking flag on a tamper finding, while a real blocking finding still blocks", () => {
+    const flagged = at(tamper(8, 2, "edit_file", "conftest.py", "PROTECTED_FILE"), {});
+    flagged.payload.blocking = true; flagged.payload.severity = "high";
+    expect(derive(mission([flagged])).gate.ok).toBe(true);
+    const real = at(event(9, "finding", "shadow_review", { finding_id: "f_r", severity: "high", blocking: true, action: "open", title: "Rounding", evidence_event_ids: [] }), { code_rev: R });
+    const v = derive(mission([real]));
+    expect(v.findings.filter(isOpen).map((f) => f.id)).toEqual(["f_r"]);
+    expect(v.gate.reasons).toContain("A blocking finding is still open");
+  });
+
+  test("are labelled by tool and refusal code, attributed to the refused call's agent", () => {
+    const [edit, escape] = derive(mission([])).tampers;
+    expect(tamperText(edit.tamper!)).toBe("tried to edit tests/test_pricing.py");
+    expect(edit.tamper!.code).toBe("PROTECTED_FILE");
+    expect(tamperText(escape.tamper!)).toBe("tried to escape the workspace via ../../private/acceptance/cheat/test_acceptance_cheat.py");
+    expect(tamperText({ tool: "read_file", path: "secrets.env", code: "PROTECTED_FILE" })).toBe("tried to read secrets.env");
+    expect(tamperText({ tool: "write_file", path: "pytest.ini", code: "PROTECTED_FILE" })).toBe("tried to edit pytest.ini");
+    expect(edit.actor).toBe("samurai");
+    expect(edit.evidenceIds).toEqual([2]);
+    expect(agentName(edit.agent)).toBe("Orchestrator");
+  });
+
+  test("only the orchestrator can mark a finding as a tamper attempt", () => {
+    const spoof = at(event(10, "finding", "shadow_review", { finding_id: "f_s", severity: "high", blocking: true, action: "open", title: "x", tamper: { tool: "edit_file", path: "a", code: "PROTECTED_FILE" } }), { code_rev: R });
+    const v = derive(mission([spoof]));
+    expect(v.findings.map((f) => f.id)).toEqual(["f_s"]);
+    expect(v.gate.reasons).toContain("A blocking finding is still open");
+  });
+
+  test("orchestrator usage per_agent is accepted", () => {
+    const v = derive([event(1, "usage", "orchestrator", { per_agent: { orchestrator: count(0), samurai: count(2) }, total: count(2) })]);
+    expect(v.usage?.per_agent.orchestrator.turns).toBe(0);
+  });
+});
+
+describe("reviewer finding resolution fields", () => {
+  test("carried_forward and unaccepted_resolution stay blocking; resolution_evidence is kept", () => {
+    const v = derive([
+      event(1, "finding", "shadow_security", { finding_id: "f_c", severity: "critical", blocking: true, action: "open", title: "Escape", evidence_event_ids: [3] }),
+      event(2, "finding", "shadow_security", { finding_id: "f_c", severity: "critical", blocking: true, action: "open", title: "Escape", carried_forward: true, evidence_event_ids: [4] }),
+      event(5, "finding", "shadow_review", { finding_id: "f_u", severity: "critical", blocking: true, action: "open", title: "Bad", unaccepted_resolution: "The candidate tree has not changed since this critical finding blocked." }),
+      event(6, "finding", "verifier", { finding_id: "f_ok", severity: "low", blocking: false, action: "open", title: "Fixed", resolution_evidence: { path: "store.py", line: 12 }, evidence_event_ids: [5] }),
+    ]);
+    const by = Object.fromEntries(v.findings.map((f) => [f.id, f]));
+    expect(by.f_c.carriedForward).toBe(true);
+    expect(by.f_c.evidenceIds).toEqual([4]);
+    expect(blocksGate(by.f_c)).toBe(true);
+    expect(by.f_u.unacceptedResolution).toContain("has not changed");
+    expect(blocksGate(by.f_u)).toBe(true);
+    expect(by.f_ok.resolutionEvidence).toEqual({ path: "store.py", line: 12 });
+    expect(blocksGate(by.f_ok)).toBe(false);
+  });
+});
+
 describe("registered requests", () => {
+  test("the cheat red-team fixture is listed locally", () => {
+    expect(REPOS).toContain("cheat");
+    expect(LOCAL_CATALOG.cheat).toEqual([REQUESTS.cheat]);
+    expect(normalizeRequests([{ repo: "cheat", request: "C" }])?.cheat).toEqual(["C"]);
+  });
+
   test("accepts list and map shapes; unusable bodies fall back", () => {
     expect(normalizeRequests([{ repo: "stock", request: "A" }, { repo: "nope", request: "B" }])?.stock).toEqual(["A"]);
     expect(normalizeRequests({ requests: [{ repo: "cart", request: "C" }] })?.cart).toEqual(["C"]);
