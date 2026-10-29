@@ -2050,3 +2050,35 @@ describe("gate rules for critical findings", () => {
     expect(last.payload.resolution_evidence).toEqual({ path: "calc.py", line: 2 });
   }, 30000);
 });
+
+test("tool_call arguments are redacted for non-edit tools", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.samurai = [
+    call("search", { path: ".", query: "api_key=sk-livesecretvalue123" }, "redact-search"),
+    ...script.samurai,
+  ];
+  const app = startServer({
+    root: join(f.root, "redact-runtime"),
+    registry: f.registry,
+    runner: localRunner,
+    mock: true,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  const event = app.service.store
+    .events(mission_id)
+    .find((e) => e.type === "tool_call" && e.payload.call_id === "redact-search")!;
+  expect(event.payload.arguments.path).toBe(".");
+  expect(JSON.stringify(event.payload)).not.toContain("livesecretvalue");
+}, 20000);

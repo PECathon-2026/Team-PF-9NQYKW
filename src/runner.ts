@@ -35,11 +35,58 @@ export function suiteDigest(path: string): string {
   return "sha256:" + createHash("sha256").update(lines).digest("hex");
 }
 
-async function execute(
+/** Combined stdout+stderr kept per run; the rest is drained and discarded. */
+export const OUTPUT_CAP = 16000;
+async function capped(stream: ReadableStream<Uint8Array>, cap: number) {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0,
+    truncated = false;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    if (size < cap) {
+      const take = value.subarray(0, cap - size);
+      chunks.push(take);
+      size += take.length;
+      if (take.length < value.length) truncated = true;
+    } else truncated = true;
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+}
+
+export type Container = {
+  engine: string;
+  name: string;
+  env: Record<string, string>;
+};
+/** Force-stop and remove a named container; safe if it is already gone. */
+export async function removeContainer(container: Container) {
+  for (const args of [
+    ["kill", container.name],
+    ["rm", "-f", container.name],
+  ]) {
+    try {
+      const proc = Bun.spawn([container.engine, ...args], {
+        env: container.env,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      const timer = setTimeout(() => proc.kill(), 5000);
+      await proc.exited;
+      clearTimeout(timer);
+    } catch {}
+  }
+}
+
+export async function execute(
   argv: string[],
   cwd: string,
   env: Record<string, string>,
   deadline: number,
+  container?: Container,
 ): Promise<RunResult> {
   const start = Date.now();
   const timeout = Math.min(30000, deadline - start);
@@ -57,20 +104,29 @@ async function execute(
     throw Error("SANDBOX_UNAVAILABLE");
   }
   let timedOut = false;
+  let cleanup: Promise<void> | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
+    // Killing the engine client does not stop the container itself.
+    if (container) cleanup = removeContainer(container);
   }, timeout);
   try {
     const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      capped(proc.stdout, OUTPUT_CAP),
+      capped(proc.stderr, OUTPUT_CAP),
       proc.exited,
     ]);
-    if (timedOut) throw Error("CHECK_TIMEOUT");
+    if (timedOut) {
+      await cleanup;
+      throw Error("CHECK_TIMEOUT");
+    }
+    const truncated = out.truncated || err.truncated;
     return {
       exitCode: code,
-      output: (out + "\n" + err).slice(0, 16000),
+      output:
+        (out.text + "\n" + err.text).slice(0, OUTPUT_CAP) +
+        (truncated ? "\n[output truncated]" : ""),
       duration: Date.now() - start,
     };
   } finally {
@@ -106,8 +162,10 @@ function checkArgs(argv: string[], repo: string, work: string): string[] {
   return args;
 }
 
-export function makeRunner(allowUnisolated: boolean): Runner {
-  const engine = Bun.which("podman") || Bun.which("docker");
+export function makeRunner(
+  allowUnisolated: boolean,
+  engine = Bun.which("podman") || Bun.which("docker"),
+): Runner {
   if (!engine && !allowUnisolated) throw Error("SANDBOX_UNAVAILABLE");
   const isolation = allowUnisolated ? "unisolated" : "isolated";
   const engineEnv: Record<string, string> = {
@@ -181,7 +239,13 @@ export function makeRunner(allowUnisolated: boolean): Runner {
     isolation,
     async check(snapshot, config, deadline) {
       const argv = safeArgv(config.check.argv);
+      // Per-run scratch directory; its unique name also names the container.
       const work = mkdtempSync(join(tmpdir(), "devpilot-check-"));
+      const container: Container = {
+        engine: engine!,
+        name: basename(work),
+        env: engineEnv,
+      };
       const bootstrap = resolve(import.meta.dir, "verification/check_bootstrap.py");
       writeFileSync(join(work, "pytest.ini"), "[pytest]\n");
       try {
@@ -197,6 +261,8 @@ export function makeRunner(allowUnisolated: boolean): Runner {
           engine!,
           "run",
           "--rm",
+          "--name",
+          container.name,
           "--pull=never",
           "--network=none",
           "--read-only",
@@ -226,7 +292,12 @@ export function makeRunner(allowUnisolated: boolean): Runner {
         work,
         engineEnv,
         deadline,
+        container,
       );
+      } catch (error) {
+        // --rm covers normal exits; make sure nothing outlives a failed run.
+        if (isolation === "isolated") await removeContainer(container);
+        throw error;
       } finally {
         rmSync(work, { recursive: true, force: true });
       }

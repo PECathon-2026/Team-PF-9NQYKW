@@ -18,6 +18,30 @@ const ignored = new Set([
   ".pytest_cache",
   ".venv",
 ]);
+/**
+ * Credential-like files never enter snapshots, digests, model tools or
+ * containers. They are skipped (not fatal) wherever they appear.
+ */
+export function isSecretName(name: string): boolean {
+  const n = name.toLowerCase();
+  return (
+    n.startsWith(".env") ||
+    /^id_(?:rsa|dsa|ecdsa|ed25519)/.test(n) ||
+    /\.(?:pem|key|p12|pfx|jks|keystore|ppk|asc|gpg|kdbx)$/.test(n) ||
+    [
+      ".netrc",
+      ".npmrc",
+      ".pypirc",
+      ".git-credentials",
+      ".htpasswd",
+      "credentials",
+      "credentials.json",
+      "secrets.json",
+      "secrets.yaml",
+      "secrets.yml",
+    ].includes(n)
+  );
+}
 export function entries(
   root: string,
 ): { path: string; dir: boolean; executable: boolean; bytes: Buffer }[] {
@@ -25,8 +49,7 @@ export function entries(
   function walk(dir: string, prefix: string) {
     for (const name of readdirSync(dir).sort()) {
       if (!prefix && ignored.has(name)) continue;
-      if (name === ".env" || name.startsWith(".env."))
-        throw new Error("SECRET_FILE");
+      if (isSecretName(name)) continue;
       const path = prefix ? `${prefix}/${name}` : name;
       const full = join(dir, name),
         stat = lstatSync(full);

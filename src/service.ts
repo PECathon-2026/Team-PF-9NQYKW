@@ -1209,7 +1209,8 @@ export class Service {
       {
         call_id: callId,
         tool: name,
-        arguments: name === "edit_file" ? { path: args.path } : args,
+        arguments:
+          name === "edit_file" ? { path: args.path } : redact(args, "", 2000),
         job_id: role,
       },
       m.current_rev,

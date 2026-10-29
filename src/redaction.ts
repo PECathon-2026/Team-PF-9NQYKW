@@ -1,6 +1,6 @@
 /** Redact provider credentials and common secret fields before persisting output. */
 export function redact(value: any, key = "", maxString = 16000): any {
-  if (/api[_-]?key|token|password|secret|authorization/i.test(key))
+  if (/api[_-]?key|token(?!s$)|password|secret|authorization/i.test(key))
     return "[REDACTED]";
   if (typeof value === "string") {
     let cleaned = value;

@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { confined, entries, normalizedPath } from "./tree";
+import { confined, entries, isSecretName, normalizedPath } from "./tree";
 export const allowedCommands: Record<string, string[]> = {
   pytest: ["python3", "-m", "pytest", "-q"],
 };
@@ -44,6 +44,7 @@ export function classifyEdit(
     parts.some((part) => part === "pytest" || part === "_pytest") ||
     (parts.includes(".github") && parts.includes("workflows")) ||
     protectedNames.has(name) ||
+    parts.some(isSecretName) ||
     name.endsWith(".pth") ||
     /^test_.*\.py$/.test(name) ||
     /_test\.py$/.test(name) ||
@@ -67,12 +68,21 @@ export function readTool(root: string, name: string, args: any): any {
   };
   if (!keys[name] || Object.keys(args).some((k) => !keys[name]!.includes(k)))
     throw Error("INVALID_ARGUMENTS");
+  if (
+    typeof args.path === "string" &&
+    args.path.split("/").some(isSecretName)
+  )
+    throw Error("NOT_FOUND");
   if (name === "read_file")
     return {
       content: readFileSync(confined(root, args.path), "utf8").slice(0, 32000),
     };
   if (name === "list_dir")
-    return { entries: readdirSync(confined(root, args.path)).slice(0, 500) };
+    return {
+      entries: readdirSync(confined(root, args.path))
+        .filter((entry) => !isSecretName(entry))
+        .slice(0, 500),
+    };
   if (name === "search") {
     if (
       typeof args.query !== "string" ||

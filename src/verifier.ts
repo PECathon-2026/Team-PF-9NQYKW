@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { copyTree, entries } from "./tree";
-import type { RunResult } from "./runner";
+import type { Container, RunResult } from "./runner";
 
 type Isolation = "isolated" | "unisolated";
 type Config = {
@@ -29,6 +29,7 @@ type Config = {
     cwd: string,
     env: Record<string, string>,
     deadline: number,
+    container?: Container,
   ) => Promise<RunResult>;
   suiteDigest: (path: string) => string;
 };
@@ -108,10 +109,18 @@ export async function verifyCandidate(
   const candidate = join(temp, "candidate"),
     privateSuite = join(temp, "private-suite"),
     proxies = join(temp, "proxies"),
-    scratch = join(temp, "scratch"),
+    workerScratch = join(temp, "scratch-worker"),
     results = join(temp, "results"),
     bridge = join(temp, "bridge");
-  for (const path of [proxies, scratch, results, bridge]) mkdirSync(path);
+  for (const path of [proxies, workerScratch, results, bridge]) mkdirSync(path);
+  // Each harness run gets its own scratch directory, never shared with the
+  // candidate worker container or with another harness run.
+  let harnessRuns = 0;
+  const harnessScratch = () => {
+    const path = join(temp, `scratch-harness-${++harnessRuns}`);
+    mkdirSync(path);
+    return path;
+  };
   let worker: ReturnType<typeof Bun.spawn> | undefined;
   let server: ReturnType<typeof Bun.listen> | undefined;
   let active: any;
@@ -145,11 +154,10 @@ export async function verifyCandidate(
     const inContainer = config.isolation === "isolated";
     const suitePath = inContainer ? "/private" : privateSuite;
     const proxyPath = inContainer ? "/proxies" : proxies;
-    const scratchPath = inContainer ? "/scratch" : scratch;
     const resultsPath = inContainer ? "/results" : results;
     const helperPath = inContainer ? "/tools" : toolsDir;
     const rpcPath = inContainer ? "/bridge/rpc.sock" : join(bridge, "rpc.sock");
-    const baseArgs = [
+    const baseArgs = (scratch: string) => [
       "-I",
       `${helperPath}/bootstrap.py`,
       inContainer ? "" : config.site,
@@ -167,7 +175,7 @@ export async function verifyCandidate(
       suitePath,
       "--import-mode=importlib",
       "--basetemp",
-      `${scratchPath}/pytest-base`,
+      `${inContainer ? "/scratch" : scratch}/pytest-base`,
     ];
     const harnessEnv = {
       ...config.environment,
@@ -175,15 +183,24 @@ export async function verifyCandidate(
       DEVPILOT_RPC: rpcPath,
       DEVPILOT_COLLECTION: `${resultsPath}/collection.json`,
     };
-    const harnessCommand = (args: string[]) => {
+    const harness = (args: string[]) => {
+      const scratch = harnessScratch();
       if (!inContainer)
-        return [...config.networkPrefix, "python3", ...baseArgs, ...args];
-      return [
+        return {
+          argv: [...config.networkPrefix, "python3", ...baseArgs(scratch), ...args],
+          container: undefined,
+        };
+      const container: Container = {
+        engine: config.engine!,
+        name: containerName(),
+        env: config.engineEnv,
+      };
+      return { container, argv: [
         config.engine!,
         "run",
         "--rm",
         "--name",
-        containerName(),
+        container.name,
         "--pull=never",
         "--network=none",
         "--read-only",
@@ -220,16 +237,21 @@ export async function verifyCandidate(
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
         config.image,
         "python3",
-        ...baseArgs,
+        ...baseArgs(scratch),
         ...args,
-      ];
+      ] };
     };
-    const collection = await config.execute(
-      harnessCommand(["--collect-only", suitePath]),
-      temp,
-      inContainer ? config.engineEnv : harnessEnv,
-      deadline,
-    );
+    const runHarness = (args: string[]) => {
+      const { argv, container } = harness(args);
+      return config.execute(
+        argv,
+        temp,
+        inContainer ? config.engineEnv : harnessEnv,
+        deadline,
+        container,
+      );
+    };
+    const collection = await runHarness(["--collect-only", suitePath]);
     let expected: string[] = [];
     try {
       expected = JSON.parse(
@@ -277,7 +299,7 @@ export async function verifyCandidate(
           "--volume",
           `${candidate}:/candidate:ro`,
           "--volume",
-          `${scratch}:/scratch:rw`,
+          `${workerScratch}:/scratch:rw`,
           "--volume",
           `${join(toolsDir, "worker.py")}:/worker.py:ro`,
           "--workdir",
@@ -334,12 +356,11 @@ export async function verifyCandidate(
         if (active) active.end();
       }
     })();
-    const run = await config.execute(
-      harnessCommand(["--junitxml", `${resultsPath}/report.xml`, suitePath]),
-      temp,
-      inContainer ? config.engineEnv : harnessEnv,
-      deadline,
-    );
+    const run = await runHarness([
+      "--junitxml",
+      `${resultsPath}/report.xml`,
+      suitePath,
+    ]);
     let actualCollection: string[] = [];
     try {
       actualCollection = JSON.parse(
