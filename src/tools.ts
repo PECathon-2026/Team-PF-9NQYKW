@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { confined, entries, isSecretName, normalizedPath } from "./tree";
 export const allowedCommands: Record<string, string[]> = {
   pytest: ["python3", "-m", "pytest", "-q"],
@@ -12,11 +12,26 @@ export function commandFor(id: string): string[] {
 export function classifyEdit(
   root: string,
   path: string,
-): { path: string; kind: "protected" | "documentation" | "source" } {
+  /** GitHub missions: the mission base; new test_devpilot_*.py files are allowed. */
+  agentTestBase?: string,
+): {
+  path: string;
+  kind: "protected" | "documentation" | "source" | "agent_test";
+} {
   const normalized = normalizedPath(root, path, true);
   if (!normalized) throw Error("INVALID_PATH");
   const parts = normalized.toLowerCase().split("/");
   const name = parts.at(-1)!;
+  // Agent-authored tests live only in files that did not exist in the cloned
+  // repository, so existing tests keep the same tamper protection.
+  if (
+    agentTestBase &&
+    /^test_devpilot_[a-z0-9_]{1,60}\.py$/.test(normalized.split("/").at(-1)!) &&
+    !parts.some(isSecretName) &&
+    !parts.some((part) => part.startsWith(".")) &&
+    !existsSync(join(agentTestBase, normalized))
+  )
+    return { path: normalized, kind: "agent_test" };
   const testDirs = new Set(["tests", "test", "__tests__", "testing"]);
   const protectedNames = new Set([
     "conftest.py",

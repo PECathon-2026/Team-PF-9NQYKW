@@ -239,6 +239,10 @@ A positive decision returns `202` while the apply manager performs the final bas
 
 The approval deadline is part of the 150-second mission deadline. No new revision is produced while approval is pending. If the approval becomes invalid, the mission escalates instead of silently asking the same decision to approve different code.
 
+### GitHub repository missions
+
+`POST /missions` with `{repo_url, ref?, request, mode?}` creates a mission on a public github.com repository (see README "Missions on your own GitHub repository" for caps and error codes). The clone, project detection and dependency install happen in `src/github.ts` and `Runner.install` (the only networked container); the mission then uses a generated config with `acceptance_mode: "repo_tests"`: the repository's own `python -m pytest -q` is the check, protected test files must stay byte-identical to r0, and agents may add only new `test_devpilot_<topic>.py` files. `GET /missions/:id/patch` returns the latest diff as a download; nothing is pushed upstream.
+
 ## Mission state and scheduling
 
 ```mermaid

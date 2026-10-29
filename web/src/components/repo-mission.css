@@ -1,0 +1,21 @@
+/* GitHub repository mission form: large, readable, one obvious action. */
+.rm-card{padding:28px}
+.rm-title{display:flex;align-items:center;gap:10px;font-size:24px;margin:0 0 8px;color:var(--ink)}
+.rm-lead{font-size:16px;line-height:1.55;color:var(--ink2);margin:0 0 6px;max-width:68ch}
+.rm-label{display:block;font-size:16px;font-weight:600;color:var(--ink);margin:22px 0 8px}
+.rm-optional{font-weight:400;color:var(--mut)}
+.rm-input{display:block;width:100%;box-sizing:border-box;font:inherit;font-size:17px;padding:14px 16px;border-radius:8px;border:1px solid rgba(225,216,204,.28);background:rgba(15,15,14,.7);color:var(--ink)}
+.rm-input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+.rm-input-short{max-width:320px}
+.rm-textarea{resize:vertical;min-height:110px;line-height:1.5}
+.rm-invalid{border-color:var(--bad)}
+.rm-hint{font-size:14px;color:var(--mut);margin:8px 0 0}
+.rm-error{font-size:15px;line-height:1.45;color:#f0a08c;margin:8px 0 0;padding:10px 12px;border-left:3px solid var(--bad);background:rgba(217,135,113,.1);border-radius:4px}
+.rm-submit{margin-top:26px;font-size:17px;padding:14px 22px;border-radius:8px}
+.rm-spin{animation:rm-spin 1s linear infinite}
+@keyframes rm-spin{to{transform:rotate(360deg)}}
+.rm-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.rm-banner-text{display:flex;flex-direction:column;gap:6px;font-size:15px;color:var(--ink2)}
+.rm-banner-label{font-size:18px;color:var(--ink);word-break:break-all}
+.rm-download{font-size:16px;padding:12px 18px;border-radius:8px;text-decoration:none}
+.rm-demo-heading{font-size:18px;color:var(--ink2);margin:8px 0 12px}

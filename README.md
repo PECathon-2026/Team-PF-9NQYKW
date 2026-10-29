@@ -92,6 +92,40 @@ cd web && bun run dev    # UI on http://localhost:5173
 
 The UI also has a demo replay (`?replay=1`), labelled "Demo replay (simulated)", which plays a scripted mission without the backend.
 
+## Missions on your own GitHub repository
+
+Besides the demo fixtures, DevPilot can work on any small **public** Python repository on github.com that uses pytest. In the UI, open **New mission** and fill in **Repository link**, the optional **Branch or tag**, and **What should change?**. Over the API:
+
+```bash
+curl -X POST localhost:8787/missions -H 'Content-Type: application/json' \
+  -d '{"repo_url":"https://github.com/owner/repo","ref":"main","request":"Fix ... and add a test"}'
+# 202 {"mission_id":"...","label":"github:owner/repo@main","acceptance_mode":"repo_tests"}
+```
+
+How it works:
+
+- **Clone.** Shallow clone (`--depth 1`, no tags, no submodules, symlinks off, https only, no credentials) from `https://github.com/<owner>/<repo>` only. `.git` and any non-regular files are removed after the clone. Caps: `DEVPILOT_CLONE_MAX_MB` (default 50), `DEVPILOT_CLONE_TIMEOUT_SECONDS` (60), `DEVPILOT_CLONE_MAX_FILES` (5000).
+- **Detect.** Only pytest projects are supported for now (`test_*.py` / `*_test.py` files must exist).
+- **Install.** Dependencies from `requirements*.txt` and `pyproject.toml` (`[project].dependencies` plus test/dev extras and groups) are installed as binary wheels into a separate directory. This is the **only step with network access**; it runs in its own container (`DEVPILOT_INSTALL_TIMEOUT_SECONDS`, default 90). The project itself is never installed, so agent edits are what the tests import. Every check afterwards runs with `--network=none`.
+- **Tests.** Existing test files are protected exactly as in the fixtures. Agents may add new tests only as new files named `test_devpilot_<topic>.py`.
+- **Acceptance.** There is no hidden acceptance suite for a repository you bring, so the mission runs with `acceptance_mode: "repo_tests"`. The approval gate reads: *No hidden acceptance suite: evidence is the repo's own tests*. Evidence is the repository's own pytest run plus a check that the original test files are byte-identical.
+- **Output.** Missions are labelled `github:owner/repo@ref`. The result is a patch: `GET /missions/:id/patch` (also a **Download patch** button in the UI). DevPilot never pushes to the target repository.
+
+Errors are returned as `{"error": CODE, "message": "readable text"}`:
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_REPO_URL` | Not an `https://github.com/owner/repo` link |
+| `INVALID_REF` | Branch or tag name is malformed or does not exist |
+| `MISSING_REQUEST` | No request text |
+| `CLONE_FAILED` | Repository missing, private, or unreachable |
+| `CLONE_TOO_LARGE` | Over the size or file-count cap |
+| `CLONE_TIMEOUT` | Clone took longer than the time cap |
+| `UNSUPPORTED_PROJECT` | No pytest test files found |
+| `DEPENDENCY_INSTALL_FAILED` | Dependencies could not be installed (output included, redacted) |
+
+The real-clone smoke test is skipped by default; run it with `DEVPILOT_NET_TESTS=1 bun test tests/github.test.ts`.
+
 ## Demo repositories
 
 The fixture registry contains six seed repositories. Each one has an exact registered request, a check command and a private acceptance suite pinned by digest:

@@ -73,6 +73,12 @@ export class Store {
           `ALTER TABLE missions ADD COLUMN ${name} TEXT REFERENCES missions(id)`,
         );
     }
+    // GitHub missions: acceptance mode ('hidden' fixture suite or the
+    // repository's own tests) and the clone source (url, ref, commit).
+    for (const name of ["acceptance_mode", "source"]) {
+      if (!columns.some((column) => column.name === name))
+        this.db.exec(`ALTER TABLE missions ADD COLUMN ${name} TEXT`);
+    }
   }
   get(id: string): any {
     return this.db.query("SELECT * FROM missions WHERE id=?").get(id);

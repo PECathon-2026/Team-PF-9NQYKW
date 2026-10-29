@@ -1,4 +1,5 @@
-import { Service, type Options } from "./service";
+import { REPO_TESTS_GATE_NOTE, Service, type Options } from "./service";
+import { GithubMissionError } from "./github";
 import { loadRegistry } from "./registry";
 import type { Event } from "./store";
 import { readFileSync } from "node:fs";
@@ -112,6 +113,35 @@ export function startServer(
             },
           });
         }
+        const patchMatch = url.pathname.match(/^\/missions\/([^/]+)\/patch$/);
+        if (req.method === "GET" && patchMatch) {
+          // Output of a mission is a patch to download; DevPilot never pushes.
+          const m = service.store.get(patchMatch[1]!);
+          if (!m) return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+          const latest: any = service.store.db
+            .query(
+              "SELECT content FROM artifacts WHERE mission_id=? AND kind='diff' ORDER BY rowid DESC LIMIT 1",
+            )
+            .get(m.id);
+          if (!latest)
+            return Response.json(
+              { error: "NO_PATCH", message: "This mission has not changed any files yet." },
+              { status: 404 },
+            );
+          const name = String(m.repo)
+            .replace(/^github:/, "")
+            .replace(/[^A-Za-z0-9._-]+/g, "-")
+            .slice(0, 80);
+          return new Response(latest.content, {
+            headers: {
+              "content-type": "text/x-diff; charset=utf-8",
+              "content-disposition": `attachment; filename="devpilot-${name}-${m.id}.patch"`,
+              "x-content-type-options": "nosniff",
+              "content-security-policy": "default-src 'none'",
+              "cache-control": "no-store",
+            },
+          });
+        }
         if (req.method === "GET" && url.pathname === "/requests") {
           return Response.json({ requests: listRequests(service.registry) });
         }
@@ -122,7 +152,7 @@ export function startServer(
           const m = service.store.get(match[1]!);
           if (!m) return Response.json({ error: "NOT_FOUND" }, { status: 404 });
           const events = service.store.events(m.id);
-          const { suite, snapshot, base_ref, ...publicMission } = m;
+          const { suite, snapshot, base_ref, source, ...publicMission } = m;
           const approval = m.approval ? JSON.parse(m.approval) : null;
           return Response.json({
             ...publicMission,
@@ -137,6 +167,11 @@ export function startServer(
                 }
               : null,
             evidence: JSON.parse(m.evidence),
+            acceptance_mode: m.acceptance_mode || "hidden",
+            source: source ? JSON.parse(source) : null,
+            gate_note:
+              m.acceptance_mode === "repo_tests" ? REPO_TESTS_GATE_NOTE : null,
+            patch_url: `/missions/${m.id}/patch`,
             usage: service.store.usage(m.id),
             deadline_paused: m.state === "AWAITING_APPROVAL",
             deadline_remaining_ms: service.deadlineRemainingAtGate(m.id),
@@ -162,6 +197,46 @@ export function startServer(
           }
           if (!body || typeof body !== "object" || Array.isArray(body))
             return Response.json({ error: "INVALID_REQUEST" }, { status: 400 });
+          if (url.pathname === "/missions" && "repo_url" in body) {
+            const extra = Object.keys(body).find(
+              (k) => !["repo_url", "ref", "request", "mode"].includes(k),
+            );
+            if (extra)
+              return Response.json(
+                {
+                  error: "INVALID_REQUEST",
+                  message: `Unexpected field "${extra.slice(0, 40)}". Send repo_url, request and optionally ref and mode.`,
+                },
+                { status: 400 },
+              );
+            try {
+              const mid = await service.createGithub(body);
+              const m = service.store.get(mid);
+              return Response.json(
+                {
+                  mission_id: mid,
+                  id: mid,
+                  label: m.repo,
+                  acceptance_mode: m.acceptance_mode,
+                },
+                { status: 202 },
+              );
+            } catch (error: any) {
+              if (error instanceof GithubMissionError)
+                return Response.json(
+                  { error: error.code, message: error.message },
+                  { status: error.status },
+                );
+              return Response.json(
+                {
+                  error: "CLONE_FAILED",
+                  message:
+                    "The repository was downloaded but could not be prepared as a mission.",
+                },
+                { status: 500 },
+              );
+            }
+          }
           if (url.pathname === "/missions") {
             if (
               typeof body.repo !== "string" ||

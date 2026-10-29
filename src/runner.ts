@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { entries } from "./tree";
 import { verifyCandidate } from "./verifier";
+import { INSTALL_SCRIPT } from "./github";
 
 export type RunResult = { exitCode: number; output: string; duration: number };
 export type Runner = {
@@ -19,6 +20,16 @@ export type Runner = {
     suite: any,
     deadline: number,
   ) => Promise<{ passed: boolean; criteria: any[] }>;
+  /**
+   * GitHub missions only: install declared dependencies into `deps`. This is
+   * the one step that runs with network access; the repository is read-only.
+   */
+  install?: (
+    repo: string,
+    deps: string,
+    requirements: string[],
+    timeoutMs: number,
+  ) => Promise<RunResult>;
 };
 
 export function suiteDigest(path: string): string {
@@ -87,9 +98,10 @@ export async function execute(
   env: Record<string, string>,
   deadline: number,
   container?: Container,
+  maxMs = 30000,
 ): Promise<RunResult> {
   const start = Date.now();
-  const timeout = Math.min(30000, deadline - start);
+  const timeout = Math.min(maxMs, deadline - start);
   if (timeout <= 0) throw Error("DEADLINE");
   let proc;
   try {
@@ -147,8 +159,15 @@ function safeArgv(argv: unknown): string[] {
   return argv as string[];
 }
 
-function checkArgs(argv: string[], repo: string, work: string): string[] {
-  const args = ["-p", "no:cacheprovider", "--noconftest", "-c", `${work}/pytest.ini`, "--rootdir", work];
+function checkArgs(
+  argv: string[],
+  repo: string,
+  work: string,
+  allowConftest = false,
+): string[] {
+  // Fixture missions ignore conftest.py. GitHub missions keep the repository's
+  // own (protected, unchanged) conftest.py files, which their tests rely on.
+  const args = ["-p", "no:cacheprovider", ...(allowConftest ? [] : ["--noconftest"]), "-c", `${work}/pytest.ini`, "--rootdir", work];
   let targets = 0;
   for (let i = 3; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -248,12 +267,17 @@ export function makeRunner(
       };
       const bootstrap = resolve(import.meta.dir, "verification/check_bootstrap.py");
       writeFileSync(join(work, "pytest.ini"), "[pytest]\n");
+      const conftest = !!config.check.allow_conftest;
+      const deps: string | undefined = config.deps;
+      const extraEnv: Record<string, string> = {
+        ...(config.src_layout ? { DEVPILOT_SRC_LAYOUT: "1" } : {}),
+      };
       try {
         if (isolation === "unisolated")
           return await execute(
-            ["python3", "-I", bootstrap, site, snapshot, ...checkArgs(argv, snapshot, work)],
+            ["python3", "-I", bootstrap, site, snapshot, ...checkArgs(argv, snapshot, work, conftest)],
             work,
-            environment,
+            { ...environment, ...extraEnv, ...(deps ? { DEVPILOT_DEPS: deps } : {}) },
             deadline,
           );
         return await execute(
@@ -285,9 +309,13 @@ export function makeRunner(
           "PYTHONDONTWRITEBYTECODE=1",
           "--env",
           "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+          ...(deps
+            ? ["--volume", `${deps}:/deps:ro`, "--env", "DEVPILOT_DEPS=/deps"]
+            : []),
+          ...Object.entries(extraEnv).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
           image,
           "python3", "-I", "/check_bootstrap.py", "", "/repo",
-          ...checkArgs(argv, "/repo", "/check"),
+          ...checkArgs(argv, "/repo", "/check", conftest),
         ],
         work,
         engineEnv,
@@ -296,6 +324,54 @@ export function makeRunner(
       );
       } catch (error) {
         // --rm covers normal exits; make sure nothing outlives a failed run.
+        if (isolation === "isolated") await removeContainer(container);
+        throw error;
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    },
+    async install(repo, deps, requirements, timeoutMs) {
+      const work = mkdtempSync(join(tmpdir(), "devpilot-install-"));
+      const script = join(work, "install.py");
+      writeFileSync(script, INSTALL_SCRIPT);
+      const container: Container = {
+        engine: engine!,
+        name: basename(work),
+        env: engineEnv,
+      };
+      const deadline = Date.now() + timeoutMs;
+      try {
+        if (isolation === "unisolated")
+          return await execute(
+            ["python3", "-I", script, repo, deps, ...requirements],
+            work,
+            { PATH: environment.PATH, HOME: work },
+            deadline,
+            undefined,
+            timeoutMs,
+          );
+        // Network is on for this step only (default engine network); every
+        // other container DevPilot starts uses --network=none.
+        return await execute(
+          [
+            engine!, "run", "--rm", "--name", container.name, "--pull=never",
+            "--read-only", "--cap-drop=all",
+            "--security-opt=no-new-privileges", "--pids-limit=128",
+            "--memory=1g", "--cpus=1",
+            "--tmpfs", "/tmp:rw,nosuid,size=256m",
+            "--volume", `${repo}:/src:ro`,
+            "--volume", `${deps}:/deps:rw`,
+            "--volume", `${script}:/install.py:ro`,
+            "--env", "HOME=/tmp", "--env", "PIP_NO_CACHE_DIR=1",
+            image, "python3", "-I", "/install.py", "/src", "/deps", ...requirements,
+          ],
+          work,
+          engineEnv,
+          deadline,
+          container,
+          timeoutMs,
+        );
+      } catch (error) {
         if (isolation === "isolated") await removeContainer(container);
         throw error;
       } finally {
