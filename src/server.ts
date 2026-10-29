@@ -133,6 +133,8 @@ export function startServer(options: Options & { port?: number }) {
               : null,
             evidence: JSON.parse(m.evidence),
             usage: service.store.usage(m.id),
+            deadline_paused: m.state === "AWAITING_APPROVAL",
+            deadline_remaining_ms: service.deadlineRemainingAtGate(m.id),
             watermark: events.at(-1)?.id || 0,
           });
         }

@@ -830,6 +830,83 @@ test("fix cycles extend the mission turn cap immediately and stop at the configu
   ).toThrow("INVALID_TURN_LIMIT");
 });
 
+test("Samurai's per-mission role budget extends per fix and respects both hard caps", () => {
+  const h = manual();
+  h.service.budgetConfig = {
+    missionTurns: 10,
+    missionTurnExtension: 1,
+    missionTurnMax: 12,
+    samuraiTurnExtension: 2,
+    samuraiTurnMax: 5,
+    roleTurns: { samurai: 2 },
+  };
+  for (let i = 0; i < 2; i++) h.service.reserve("manual", "turns", "samurai");
+  expect(() => h.service.reserve("manual", "turns", "samurai")).toThrow(
+    "TURN_LIMIT",
+  );
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.budget.samurai).toBe(
+    4,
+  );
+  for (let i = 0; i < 2; i++) h.service.reserve("manual", "turns", "samurai");
+  expect(() => h.service.reserve("manual", "turns", "samurai")).toThrow(
+    "TURN_LIMIT",
+  );
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.budget.samurai).toBe(
+    5,
+  );
+  h.service.reserve("manual", "turns", "samurai");
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.budget.samurai).toBe(
+    5,
+  );
+  expect(() => h.service.reserve("manual", "turns", "samurai")).toThrow(
+    "TURN_LIMIT",
+  );
+  expect(h.service.store.usage("manual").per_agent.samurai!.turns).toBe(5);
+  const limited = turnBudgets("repair", {
+    missionTurns: 3,
+    missionTurnMax: 3,
+    samuraiTurnExtension: 10,
+  });
+  expect(limited.samuraiMax).toBeGreaterThan(3);
+  const other = manual();
+  other.service.budgetConfig = {
+    missionTurns: 3,
+    missionTurnMax: 3,
+    samuraiTurnExtension: 10,
+  };
+  other.service.reserve("manual", "turns", "samurai");
+  expect(
+    other.service.store.events("manual").at(-1)!.payload.budget.samurai,
+  ).toBe(3);
+});
+
+test("Samurai turn extension and maximum use validated environment configuration", () => {
+  const oldExtension = process.env.DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX;
+  const oldMax = process.env.DEVPILOT_MAX_SAMURAI_TURNS;
+  try {
+    process.env.DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX = "5";
+    process.env.DEVPILOT_MAX_SAMURAI_TURNS = "30";
+    expect(turnBudgets("repair")).toMatchObject({
+      samuraiExtension: 5,
+      samuraiMax: 30,
+    });
+    process.env.DEVPILOT_MAX_SAMURAI_TURNS = "15";
+    expect(() => turnBudgets("repair")).toThrow("INVALID_TURN_LIMIT");
+    process.env.DEVPILOT_MAX_SAMURAI_TURNS = "30";
+    process.env.DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX = "-1";
+    expect(() => turnBudgets("repair")).toThrow("INVALID_TURN_LIMIT");
+  } finally {
+    if (oldExtension === undefined)
+      delete process.env.DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX;
+    else process.env.DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX = oldExtension;
+    if (oldMax === undefined) delete process.env.DEVPILOT_MAX_SAMURAI_TURNS;
+    else process.env.DEVPILOT_MAX_SAMURAI_TURNS = oldMax;
+  }
+});
+
 test("review prompts distinguish untrusted note paths from replacement of the trusted store root", async () => {
   const h = manual();
   const fake = scripted([reply('{"findings":[]}')]);
@@ -989,9 +1066,16 @@ test("reviewer read cache is confined to each reviewer, normalized path and revi
     "independent",
   );
   expect((first as any).data.content).toContain("value = 1");
-  expect((repeat as any).data).toEqual({
-    note: "already read, unchanged at rev r0:sha256:hash",
-  });
+  expect((repeat as any).data.content).toContain("value = 1");
+  expect((repeat as any).data.note).toContain("submit your verdict now");
+  const blocked = await h.service.tool(
+    "manual",
+    "shadow_review",
+    "read_file",
+    { path: "main.py" },
+    "blocked",
+  );
+  expect((blocked as any).error.code).toBe("REVIEW_SUBMIT_REQUIRED");
   expect((independent as any).data.content).toContain("value = 1");
   writeFileSync(join(h.source, "main.py"), "value = 2\n");
   h.service.store.db
@@ -1009,7 +1093,148 @@ test("reviewer read cache is confined to each reviewer, normalized path and revi
     h.service.store
       .events("manual")
       .filter((event) => event.type === "tool_call"),
-  ).toHaveLength(4);
+  ).toHaveLength(5);
+});
+
+test("a second re-read blocks inspection and forces the reviewer submit tool", async () => {
+  const h = manual();
+  const fake = scripted([
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "read-1",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "main.py" }),
+          },
+        },
+      ],
+    },
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "read-2",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "./main.py" }),
+          },
+        },
+      ],
+    },
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "submit",
+          type: "function",
+          function: {
+            name: "submit_result",
+            arguments: JSON.stringify({ findings: [] }),
+          },
+        },
+      ],
+    },
+  ]);
+  const result = await h.service.session(
+    "manual",
+    "shadow_security",
+    {
+      phase: "review",
+      changed_files: [{ path: "main.py", content: "value = 1\n" }],
+    },
+    fake.model,
+  );
+  expect(result.findings).toEqual([]);
+  const outcomes = h.service.store
+    .events("manual")
+    .filter((event) => event.type === "tool_result");
+  expect(outcomes[0]!.payload.data.content).toBe("value = 1\n");
+  expect(outcomes[0]!.payload.data.note).toContain("submit your verdict now");
+  expect(outcomes[1]!.payload.error.code).toBe("REVIEW_SUBMIT_REQUIRED");
+  expect(fake.inputs[2].tools.map((tool: any) => tool.function.name)).toEqual([
+    "submit_result",
+  ]);
+  expect(fake.inputs[2].messages.at(-1).content).toContain(
+    "submit your verdict/result now",
+  );
+  expect(
+    h.service.store.db
+      .query("SELECT count(*) AS n FROM failures WHERE mission_id=?")
+      .get("manual"),
+  ).toEqual({ n: 0 });
+});
+
+test("review search and listing are capped per role and revision", async () => {
+  const h = manual();
+  const calls = Array.from({ length: 5 }, (_, i) => ({
+    role: "assistant",
+    tool_calls: [
+      {
+        id: `inspect-${i}`,
+        type: "function",
+        function: {
+          name: i % 2 ? "list_dir" : "search",
+          arguments: JSON.stringify(
+            i % 2 ? { path: "." } : { path: ".", query: "value" },
+          ),
+        },
+      },
+    ],
+  }));
+  const fake = scripted([
+    ...calls,
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "done",
+          type: "function",
+          function: {
+            name: "submit_result",
+            arguments: JSON.stringify({ findings: [] }),
+          },
+        },
+      ],
+    },
+  ]);
+  await h.service.session(
+    "manual",
+    "shadow_review",
+    { phase: "review" },
+    fake.model,
+  );
+  const results = h.service.store
+    .events("manual")
+    .filter((event) => event.type === "tool_result");
+  expect(results.slice(0, 4).every((event) => event.payload.ok)).toBe(true);
+  expect(results[3]!.payload.data.note).toContain("Submit your verdict now");
+  expect(results[4]!.payload.error.code).toBe("REVIEW_SUBMIT_REQUIRED");
+  expect(fake.inputs[5].tools.map((tool: any) => tool.function.name)).toEqual([
+    "submit_result",
+  ]);
+  const independent = await h.service.tool(
+    "manual",
+    "shadow_security",
+    "list_dir",
+    { path: "." },
+    "security-list",
+  );
+  expect(independent.ok).toBe(true);
+  h.service.store.db
+    .query("UPDATE missions SET current_rev=? WHERE id=?")
+    .run("r1:sha256:new", "manual");
+  const nextRevision = await h.service.tool(
+    "manual",
+    "shadow_review",
+    "list_dir",
+    { path: "." },
+    "next-list",
+  );
+  expect(nextRevision.ok).toBe(true);
 });
 
 test("a provider cannot execute an inspection tool on the final turn", async () => {

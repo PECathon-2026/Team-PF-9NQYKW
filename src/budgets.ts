@@ -2,12 +2,16 @@ export type BudgetConfig = {
   missionTurns?: number;
   missionTurnExtension?: number;
   missionTurnMax?: number;
+  samuraiTurnExtension?: number;
+  samuraiTurnMax?: number;
   roleTurns?: Record<string, number>;
 };
 export type TurnBudgets = {
   mission: number;
   extension: number;
   max: number;
+  samuraiExtension: number;
+  samuraiMax: number;
   roles: Record<string, number>;
 };
 
@@ -16,6 +20,21 @@ export function effectiveMissionCap(
   fixes: number,
 ): number {
   return Math.min(budgets.max, budgets.mission + fixes * budgets.extension);
+}
+
+export function effectiveRoleLimit(
+  budgets: TurnBudgets,
+  role: string,
+  fixes: number,
+): number {
+  const base = budgets.roles[role] ?? 4;
+  return role === "samurai"
+    ? Math.min(
+        budgets.samuraiMax,
+        base + fixes * budgets.samuraiExtension,
+        effectiveMissionCap(budgets, fixes),
+      )
+    : base;
 }
 
 /** Reviewer caps apply per candidate revision; all other caps apply per mission. */
@@ -70,5 +89,20 @@ export function turnBudgets(
       throw Error("INVALID_TURN_LIMIT");
     roles[role] = limit;
   }
-  return { mission, extension, max, roles };
+  const samuraiExtension =
+    config.samuraiTurnExtension ??
+    envInteger("DEVPILOT_SAMURAI_TURN_EXTENSION_PER_FIX", 8);
+  const samuraiMax =
+    config.samuraiTurnMax ??
+    envInteger("DEVPILOT_MAX_SAMURAI_TURNS", Math.max(48, roles.samurai!));
+  if (
+    !Number.isSafeInteger(samuraiExtension) ||
+    samuraiExtension < 0 ||
+    samuraiExtension > 200 ||
+    !Number.isSafeInteger(samuraiMax) ||
+    samuraiMax < roles.samurai! ||
+    samuraiMax > 200
+  )
+    throw Error("INVALID_TURN_LIMIT");
+  return { mission, extension, max, samuraiExtension, samuraiMax, roles };
 }

@@ -14,6 +14,7 @@ import { Service } from "../src/service";
 import { commandFor, readTool, editTool } from "../src/tools";
 import { treeHash } from "../src/tree";
 import type { Runner } from "../src/runner";
+import { MockModel } from "../src/model";
 
 const roots: string[] = [];
 const apps: any[] = [];
@@ -420,6 +421,10 @@ describe("backend", () => {
       decision: true,
     });
     expect(done.status).toBe("COMPLETED");
+    expect(done.active_elapsed_ms).toBe(approval.active_elapsed_ms);
+    expect(done.wall_elapsed_ms).toBeGreaterThanOrEqual(
+      done.active_elapsed_ms - 5,
+    );
     expect(done.total.turns).toBe(m.turns);
     expect(done.total.input_tokens).toBeGreaterThan(0);
     expect(done.per_agent.shogun).toEqual({
@@ -601,6 +606,19 @@ test("a mission deadline cancels a pending model call and escalates", async () =
   const escalation = service.store
     .events(mission)
     .find((e) => e.type === "escalation")!;
+  expect(escalation.payload.artifact_id).toMatch(/^debug_/);
+  expect(
+    readFileSync(
+      join(
+        f.root,
+        "deadline-runtime",
+        "artifacts",
+        mission,
+        `${escalation.payload.artifact_id}.txt`,
+      ),
+      "utf8",
+    ),
+  ).toContain("replies");
   expect(escalation.payload.question).toContain("deadline expired");
   expect(escalation.payload.relevant_event_ids.length).toBeGreaterThan(0);
   expect(
@@ -608,6 +626,309 @@ test("a mission deadline cancels a pending model call and escalates", async () =
       service.store.events(mission).some((event) => event.id === id),
     ),
   ).toBe(true);
+});
+
+test("deadline debug artifacts redact replies and are available from the mission artifact endpoint", async () => {
+  const f = fixture();
+  const oldKey = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "deadline-private-test-key";
+  let calls = 0;
+  const model = {
+    async complete(
+      _role: string,
+      _messages: any[],
+      _tools: any[],
+      signal: AbortSignal,
+    ) {
+      if (++calls === 1)
+        return {
+          role: "assistant",
+          content: "deadline-private-test-key",
+          tool_calls: [
+            {
+              id: "read",
+              type: "function",
+              function: {
+                name: "read_file",
+                arguments: JSON.stringify({ path: "calc.py" }),
+              },
+            },
+          ],
+        };
+      await new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(Error("DEADLINE")), {
+          once: true,
+        }),
+      );
+      return {};
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "deadline-artifact"),
+    registry: f.registry,
+    runner: {
+      ...localRunner,
+      async check() {
+        return { exitCode: 1, output: "failed", duration: 0 };
+      },
+    },
+    model,
+    deadlineMs: 150,
+    port: 0,
+  });
+  apps.push(app);
+  try {
+    const response = await post(
+      `http://127.0.0.1:${app.server.port}/missions`,
+      { repo: "tiny", request: f.request },
+    );
+    const { mission_id } = (await response.json()) as any;
+    await waitFor(
+      () => app.service.store.get(mission_id).state === "ESCALATED",
+    );
+    const events = app.service.store.events(mission_id);
+    const escalation = events.find((event) => event.type === "escalation")!;
+    const artifact = await fetch(
+      `http://127.0.0.1:${app.server.port}/missions/${mission_id}/artifacts/${escalation.payload.artifact_id}`,
+    );
+    expect(artifact.status).toBe(200);
+    const raw = await artifact.text();
+    expect(raw).toContain("[REDACTED]");
+    expect(raw).not.toContain("deadline-private-test-key");
+    expect(JSON.stringify(events)).not.toContain("deadline-private-test-key");
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(4096);
+    expect(escalation.payload.active_elapsed_ms).toBeGreaterThan(0);
+    expect(escalation.payload.wall_elapsed_ms).toBeGreaterThanOrEqual(
+      escalation.payload.active_elapsed_ms - 5,
+    );
+  } finally {
+    if (oldKey === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = oldKey;
+  }
+});
+
+test("parallel missions get independent wall deadlines and active durations", async () => {
+  const f = fixture();
+  const starts: number[] = [];
+  const model = {
+    async complete(
+      _role: string,
+      _messages: any[],
+      _tools: any[],
+      signal: AbortSignal,
+    ) {
+      starts.push(Date.now());
+      await new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(Error("DEADLINE")), {
+          once: true,
+        }),
+      );
+      return {};
+    },
+  };
+  const service = new Service({
+    root: join(f.root, "parallel-deadlines"),
+    registry: f.registry,
+    runner: {
+      ...localRunner,
+      async check() {
+        return { exitCode: 1, output: "failed", duration: 0 };
+      },
+    },
+    model,
+    deadlineMs: 200,
+    maxDeadlineMs: 500,
+  });
+  apps.push({ close: () => service.close() });
+  const first = service.create("tiny", f.request);
+  const second = service.create("tiny", f.request);
+  expect(
+    service.store.get(first).deadline - service.store.get(first).created,
+  ).toBe(200);
+  expect(
+    service.store.get(second).deadline - service.store.get(second).created,
+  ).toBe(200);
+  await waitFor(
+    () =>
+      service.store.get(first).state === "ESCALATED" &&
+      service.store.get(second).state === "ESCALATED",
+  );
+  expect(starts).toHaveLength(2);
+  for (const mid of [first, second]) {
+    const escalation = service.store
+      .events(mid)
+      .find((event) => event.type === "escalation")!;
+    expect(escalation.payload.reason).toBe("DEADLINE");
+    expect(escalation.payload.active_elapsed_ms).toBeGreaterThan(0);
+    expect(escalation.payload.active_elapsed_ms).toBeLessThanOrEqual(
+      escalation.payload.wall_elapsed_ms + 5,
+    );
+    expect(escalation.payload.artifact_id).toMatch(/^debug_/);
+  }
+});
+
+test("approval pauses the agent deadline and an approved apply resumes with the remaining time", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.shadow_review = [text({ findings: [] })];
+  script.shadow_security = [text({ findings: [] })];
+  const runner: Runner = {
+    isolation: "isolated",
+    async check() {
+      return { exitCode: 0, output: "passed", duration: 0 };
+    },
+    async acceptance() {
+      return { passed: true, criteria: [{ id: "addition", passed: true }] };
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "gate-deadline"),
+    registry: f.registry,
+    runner,
+    mock: true,
+    deadlineMs: 300,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(
+    () => app.service.store.get(mission_id).state === "AWAITING_APPROVAL",
+  );
+  const gate = app.service.store
+    .events(mission_id)
+    .find((event) => event.type === "approval_needed")!;
+  const originalDeadline = app.service.store.get(mission_id).deadline;
+  expect(gate.payload.deadline_paused).toBe(true);
+  expect(gate.payload.deadline_remaining_ms).toBeGreaterThan(0);
+  await Bun.sleep(400);
+  expect(Date.now()).toBeGreaterThan(originalDeadline);
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  expect(
+    app.service.store
+      .events(mission_id)
+      .some((event) => event.type === "escalation"),
+  ).toBe(false);
+  const projection = (await (
+    await fetch(`http://127.0.0.1:${app.server.port}/missions/${mission_id}`)
+  ).json()) as any;
+  expect(projection.deadline_paused).toBe(true);
+  expect(projection.deadline_remaining_ms).toBe(
+    gate.payload.deadline_remaining_ms,
+  );
+  const approval = await post(
+    `http://127.0.0.1:${app.server.port}/missions/${mission_id}/approve`,
+    { approved: true },
+  );
+  expect(approval.status).toBe(202);
+  await waitFor(() =>
+    ["COMPLETED", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("COMPLETED");
+  expect(app.service.store.get(mission_id).deadline).toBeGreaterThan(
+    originalDeadline,
+  );
+  const done = app.service.store
+    .events(mission_id)
+    .find((event) => event.type === "mission_done")!;
+  expect(done.payload.active_elapsed_ms).toBe(gate.payload.active_elapsed_ms);
+});
+
+test("an approved apply is still subject to the resumed agent deadline", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.shadow_review = [text({ findings: [] })];
+  script.shadow_security = [text({ findings: [] })];
+  const runner: Runner = {
+    isolation: "isolated",
+    async check() {
+      return { exitCode: 0, output: "passed", duration: 0 };
+    },
+    async acceptance() {
+      return { passed: true, criteria: [{ id: "addition", passed: true }] };
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "resumed-deadline"),
+    registry: f.registry,
+    runner,
+    mock: true,
+    deadlineMs: 250,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(
+    () => app.service.store.get(mission_id).state === "AWAITING_APPROVAL",
+  );
+  app.service.apply = () => {};
+  await Bun.sleep(300);
+  expect(
+    (
+      await post(
+        `http://127.0.0.1:${app.server.port}/missions/${mission_id}/approve`,
+        { approved: true },
+      )
+    ).status,
+  ).toBe(202);
+  await waitFor(() => app.service.store.get(mission_id).state === "ESCALATED");
+  const escalation = app.service.store
+    .events(mission_id)
+    .find((event) => event.type === "escalation")!;
+  expect(escalation.payload.reason).toBe("DEADLINE");
+  expect(escalation.payload.artifact_id).toMatch(/^debug_/);
+});
+
+test("a mission can be rejected after waiting beyond its original deadline", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  script.shadow_review = [text({ findings: [] })];
+  script.shadow_security = [text({ findings: [] })];
+  const runner: Runner = {
+    isolation: "isolated",
+    async check() {
+      return { exitCode: 0, output: "passed", duration: 0 };
+    },
+    async acceptance() {
+      return { passed: true, criteria: [{ id: "addition", passed: true }] };
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "late-rejection"),
+    registry: f.registry,
+    runner,
+    mock: true,
+    deadlineMs: 150,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(
+    () => app.service.store.get(mission_id).state === "AWAITING_APPROVAL",
+  );
+  await Bun.sleep(200);
+  expect(
+    (
+      await post(
+        `http://127.0.0.1:${app.server.port}/missions/${mission_id}/approve`,
+        { approved: false },
+      )
+    ).status,
+  ).toBe(202);
+  expect(app.service.store.get(mission_id).state).toBe("REJECTED");
 });
 
 test("fix cycles extend the live deadline up to the hard maximum and preserve cancellation", async () => {
@@ -676,8 +997,21 @@ test("deadline extension and hard maximum are configurable in seconds", () => {
   const f = fixture();
   const previousExtension = process.env.DEVPILOT_FIX_EXTENSION_SECONDS;
   const previousMaximum = process.env.DEVPILOT_MAX_MISSION_SECONDS;
+  const previousBase = process.env.DEVPILOT_BASE_MISSION_SECONDS;
   try {
+    delete process.env.DEVPILOT_FIX_EXTENSION_SECONDS;
+    delete process.env.DEVPILOT_MAX_MISSION_SECONDS;
+    delete process.env.DEVPILOT_BASE_MISSION_SECONDS;
+    const defaults = new Service({
+      root: join(f.root, "default-deadline"),
+      registry: f.registry,
+      runner: localRunner,
+    });
+    apps.push({ close: () => defaults.close() });
+    expect(defaults.deadlineMs).toBe(240000);
+    expect(defaults.maxDeadlineMs).toBe(420000);
     process.env.DEVPILOT_FIX_EXTENSION_SECONDS = "25";
+    process.env.DEVPILOT_BASE_MISSION_SECONDS = "200";
     process.env.DEVPILOT_MAX_MISSION_SECONDS = "210";
     const service = new Service({
       root: join(f.root, "env-deadline"),
@@ -686,6 +1020,7 @@ test("deadline extension and hard maximum are configurable in seconds", () => {
     });
     apps.push({ close: () => service.close() });
     expect(service.fixExtensionMs).toBe(25000);
+    expect(service.deadlineMs).toBe(200000);
     expect(service.maxDeadlineMs).toBe(210000);
     process.env.DEVPILOT_MAX_MISSION_SECONDS = "100";
     expect(
@@ -703,6 +1038,9 @@ test("deadline extension and hard maximum are configurable in seconds", () => {
     if (previousMaximum === undefined)
       delete process.env.DEVPILOT_MAX_MISSION_SECONDS;
     else process.env.DEVPILOT_MAX_MISSION_SECONDS = previousMaximum;
+    if (previousBase === undefined)
+      delete process.env.DEVPILOT_BASE_MISSION_SECONDS;
+    else process.env.DEVPILOT_BASE_MISSION_SECONDS = previousBase;
   }
 });
 
@@ -814,6 +1152,132 @@ test("paired baseline retains the multi-agent base and links both projections", 
     paired_mission_id: multiId,
   });
   expect(Object.keys(done.per_agent)).toEqual(["baseline"]);
+}, 20000);
+
+test("both reviewers receive the full changed file and diff before using tools", async () => {
+  const f = fixture();
+  const extra = "x".repeat(33000);
+  writeFileSync(
+    join(f.repo, "calc.py"),
+    `def add(a, b):\n    return a - b\n#${extra}\n`,
+  );
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  const inner = new MockModel(script);
+  const captured: { role: string; context: any }[] = [];
+  const model = {
+    async complete(
+      role: string,
+      messages: any[],
+      tools: any[],
+      signal: AbortSignal,
+    ) {
+      if (role === "shadow_review" || role === "shadow_security") {
+        const context = JSON.parse(
+          messages.find((message) => message.role === "user").content,
+        );
+        captured.push({ role, context });
+      }
+      return inner.complete(role, messages, tools, signal);
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "review-context"),
+    registry: f.registry,
+    runner: localRunner,
+    model,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  for (const role of ["shadow_review", "shadow_security"]) {
+    const context = captured.find((entry) => entry.role === role)!.context;
+    expect(context.diff).toContain("return a + b + 1");
+    expect(context.changed_paths).toContain("calc.py");
+    const file = context.changed_files.find(
+      (item: any) => item.path === "calc.py",
+    );
+    expect(file.content).toContain(extra);
+    expect(file.content.length).toBeGreaterThan(32000);
+    expect(JSON.stringify(context)).not.toContain(f.suite);
+  }
+}, 20000);
+
+test("Samurai can use more than 16 cumulative turns across three mock fix cycles", async () => {
+  const f = fixture();
+  const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+  const steps = [
+    ["return a - b", "return a + b + 3"],
+    ["return a + b + 3", "return a + b + 2"],
+    ["return a + b + 2", "return a + b + 1"],
+    ["return a + b + 1", "return a + b"],
+  ];
+  script.samurai = steps.flatMap(([old_text, new_text], cycle) => [
+    call("list_dir", { path: "." }, `list-${cycle}-1`),
+    call("list_dir", { path: "." }, `list-${cycle}-2`),
+    call("list_dir", { path: "." }, `list-${cycle}-3`),
+    call("edit_file", { path: "calc.py", old_text, new_text }, `edit-${cycle}`),
+    text({ done: true }),
+  ]);
+  script.shadow_review = Array.from({ length: 4 }, () =>
+    text({ findings: [] }),
+  );
+  script.shadow_security = Array.from({ length: 4 }, () =>
+    text({ findings: [] }),
+  );
+  const passes = (snapshot: string) =>
+    readFileSync(join(snapshot, "calc.py"), "utf8").includes("return a + b\n");
+  const runner: Runner = {
+    isolation: "isolated",
+    async check(snapshot) {
+      return { exitCode: passes(snapshot) ? 0 : 1, output: "", duration: 0 };
+    },
+    async acceptance(snapshot) {
+      const passed = passes(snapshot);
+      return { passed, criteria: [{ id: "addition", passed }] };
+    },
+  };
+  const app = startServer({
+    root: join(f.root, "samurai-fixes"),
+    registry: f.registry,
+    runner,
+    mock: true,
+    port: 0,
+  });
+  apps.push(app);
+  const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+    repo: "tiny",
+    request: f.request,
+  });
+  const { mission_id } = (await response.json()) as any;
+  await waitFor(() =>
+    ["AWAITING_APPROVAL", "ESCALATED"].includes(
+      app.service.store.get(mission_id).state,
+    ),
+  );
+  expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+  expect(app.service.store.get(mission_id).fixes).toBe(3);
+  const usage = app.service.store.usage(mission_id);
+  expect(usage.per_agent.samurai!.turns).toBe(20);
+  const events = app.service.store.events(mission_id);
+  expect(
+    events
+      .filter(
+        (event) => event.type === "usage" && event.agent === "orchestrator",
+      )
+      .map((event) => event.payload.budget.samurai),
+  ).toEqual([24, 32, 40]);
+  expect(events.filter((event) => event.type === "diff")).toHaveLength(4);
+  expect(events.some((event) => event.type === "approval_needed")).toBe(true);
 }, 20000);
 
 test("reviewers get a fresh per-revision budget after a repair and reach approval", async () => {
