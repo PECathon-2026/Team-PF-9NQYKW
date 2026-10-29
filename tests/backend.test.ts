@@ -306,13 +306,33 @@ describe("backend", () => {
       tree_hash: expect.any(String),
       decision: null,
     });
-    expect(
-      events
-        .filter((e) => e.type === "usage")
-        .some(
-          (e) =>
-            e.payload.tokens.prompt === 5 && e.payload.tokens.completion === 2,
+    const usageEvents = events.filter((e) => e.type === "usage");
+    expect(usageEvents.length).toBeGreaterThan(0);
+    let previousTurns = 0;
+    for (const event of usageEvents) {
+      expect(Object.keys(event.payload).sort()).toEqual(["per_agent", "total"]);
+      expect(event.payload.total.turns).toBeGreaterThanOrEqual(previousTurns);
+      previousTurns = event.payload.total.turns;
+      const agents = Object.values(event.payload.per_agent) as any[];
+      expect(
+        agents.every(
+          (agent) =>
+            Object.keys(agent).sort().join(",") ===
+            "input_tokens,output_tokens,turns",
         ),
+      ).toBe(true);
+      for (const key of ["turns", "input_tokens", "output_tokens"]) {
+        expect(agents.reduce((sum, agent) => sum + agent[key], 0)).toBe(
+          event.payload.total[key],
+        );
+      }
+    }
+    expect(
+      usageEvents.some(
+        (e) =>
+          e.payload.per_agent.shogun?.input_tokens === 5 &&
+          e.payload.per_agent.shogun?.output_tokens === 2,
+      ),
     ).toBe(true);
     const replay: any[] = [];
     const ws = new WebSocket(
@@ -341,24 +361,15 @@ describe("backend", () => {
       decision: true,
     });
     expect(done.status).toBe("COMPLETED");
-    expect(done.model_turns).toBe(m.turns);
-    expect(done.tokens.prompt).toBeGreaterThan(0);
-    expect(done.by_agent.shogun).toMatchObject({
-      model_turns: 1,
-      tokens: { prompt: 5, completion: 2 },
+    expect(done.total.turns).toBe(m.turns);
+    expect(done.total.input_tokens).toBeGreaterThan(0);
+    expect(done.per_agent.shogun).toEqual({
+      turns: 1,
+      input_tokens: 5,
+      output_tokens: 2,
     });
-    expect(
-      Object.values(done.by_agent).reduce(
-        (sum: number, agent: any) => sum + agent.model_turns,
-        0,
-      ),
-    ).toBe(done.model_turns);
-    expect(
-      Object.values(done.by_agent).reduce(
-        (sum: number, agent: any) => sum + agent.tokens.prompt,
-        0,
-      ),
-    ).toBe(done.tokens.prompt);
+    expect(done.total).toEqual(usageEvents.at(-1)!.payload.total);
+    expect(done.per_agent).toEqual(usageEvents.at(-1)!.payload.per_agent);
     expect(readFileSync(join(m.base_ref, "calc.py"), "utf8")).toContain(
       "a + b",
     );
@@ -622,7 +633,7 @@ test("paired baseline retains the multi-agent base and links both projections", 
     baseline_of: multiId,
     paired_mission_id: multiId,
   });
-  expect(Object.keys(done.by_agent)).toEqual(["baseline"]);
+  expect(Object.keys(done.per_agent)).toEqual(["baseline"]);
 }, 20000);
 
 test("scanner findings keep their ID through repair and resolve from a rerun", async () => {
@@ -704,3 +715,52 @@ test("scanner findings keep their ID through repair and resolve from a rerun", a
       .payload.unresolved_findings,
   ).toEqual([]);
 }, 20000);
+
+test("resumed replay presents older usage records as cumulative snapshots", async () => {
+  const { Store } = await import("../src/store");
+  const store = new Store(":memory:", "unisolated");
+  try {
+    store.db
+      .query(
+        "INSERT INTO missions(id,repo,request,state,base_hash,base_ref,current_rev,snapshot,mode,created,deadline) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        "m_legacy",
+        "tiny",
+        "request",
+        "COMPLETED",
+        "hash",
+        "base",
+        "rev",
+        "snapshot",
+        "multi",
+        0,
+        1,
+      );
+    const first = store.event("m_legacy", "usage", "shogun", {
+      model_turns: 1,
+      tokens: { prompt: 0, completion: 0 },
+      agent_totals: { model_turns: 1, tokens: { prompt: 0, completion: 0 } },
+      totals: { model_turns: 1, tokens: { prompt: 0, completion: 0 } },
+      isolation: "unisolated",
+    });
+    store.event("m_legacy", "usage", "samurai", {
+      model_turns: 1,
+      tokens: { prompt: 0, completion: 0 },
+      agent_totals: { model_turns: 1, tokens: { prompt: 0, completion: 0 } },
+      totals: { model_turns: 2, tokens: { prompt: 0, completion: 0 } },
+      isolation: "unisolated",
+    });
+    const replay = store.events("m_legacy", first.id);
+    expect(replay).toHaveLength(1);
+    expect(replay[0]!.payload).toEqual({
+      per_agent: {
+        shogun: { turns: 1, input_tokens: 0, output_tokens: 0 },
+        samurai: { turns: 1, input_tokens: 0, output_tokens: 0 },
+      },
+      total: { turns: 2, input_tokens: 0, output_tokens: 0 },
+    });
+  } finally {
+    store.close();
+  }
+});

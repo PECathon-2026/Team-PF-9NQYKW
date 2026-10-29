@@ -61,9 +61,11 @@ describe("supplied fixture missions", () => {
       );
       const mission = app.service.store.get(mission_id);
       const events = app.service.store.events(mission_id);
-      expect(events.every((e) => e.payload.isolation === "unisolated")).toBe(
-        true,
-      );
+      expect(
+        events.every(
+          (e) => e.type === "usage" || e.payload.isolation === "unisolated",
+        ),
+      ).toBe(true);
       if (scenario === "titles") {
         expect(mission.state).toBe("ESCALATED");
         expect(
@@ -88,6 +90,11 @@ describe("supplied fixture missions", () => {
           `mission escalated: ${JSON.stringify(events.filter((e) => ["escalation", "test_result"].includes(e.type)).map((e) => e.payload))}`,
         );
       }
+      const testResults = events.filter((e) => e.type === "test_result");
+      expect(testResults.length).toBeGreaterThan(0);
+      expect(
+        testResults.every((e) => e.payload.isolation === "unisolated"),
+      ).toBe(true);
       const acceptance = events.find(
         (e) => e.type === "test_result" && e.payload.suite_id,
       );

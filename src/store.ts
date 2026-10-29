@@ -52,29 +52,30 @@ export class Store {
       prompt_tokens: number;
       completion_tokens: number;
     }[];
-    const byAgent: Record<
+    const perAgent: Record<
       string,
-      { model_turns: number; tokens: { prompt: number; completion: number } }
+      { turns: number; input_tokens: number; output_tokens: number }
     > = {};
     let modelTurns = 0,
       prompt = 0,
       completion = 0;
     for (const row of rows) {
-      byAgent[row.agent] = {
-        model_turns: row.model_turns,
-        tokens: {
-          prompt: row.prompt_tokens,
-          completion: row.completion_tokens,
-        },
+      perAgent[row.agent] = {
+        turns: row.model_turns,
+        input_tokens: row.prompt_tokens,
+        output_tokens: row.completion_tokens,
       };
       modelTurns += row.model_turns;
       prompt += row.prompt_tokens;
       completion += row.completion_tokens;
     }
     return {
-      model_turns: modelTurns,
-      tokens: { prompt, completion },
-      by_agent: byAgent,
+      per_agent: perAgent,
+      total: {
+        turns: modelTurns,
+        input_tokens: prompt,
+        output_tokens: completion,
+      },
     };
   }
   event(
@@ -86,7 +87,7 @@ export class Store {
     verified = false,
     task: string | null = null,
   ): Event {
-    payload = { ...payload, isolation: this.isolation };
+    if (type !== "usage") payload = { ...payload, isolation: this.isolation };
     const ts = Date.now();
     const result = this.db
       .query(
@@ -117,15 +118,49 @@ export class Store {
     return event;
   }
   events(id: string, after = 0): Event[] {
-    return (
-      this.db
-        .query("SELECT * FROM events WHERE mission_id=? AND id>? ORDER BY id")
-        .all(id, after) as any[]
-    ).map((e) => ({
-      ...e,
-      verified: !!e.verified,
-      payload: JSON.parse(e.payload),
-    }));
+    // Earlier usage events were deltas. Read prior usage records even on a
+    // resumed replay so they can be presented as cumulative snapshots without
+    // changing the append-only event log.
+    const rows = this.db
+      .query(
+        "SELECT * FROM events WHERE mission_id=? AND (id>? OR type='usage') ORDER BY id",
+      )
+      .all(id, after) as any[];
+    let perAgent: Record<
+      string,
+      { turns: number; input_tokens: number; output_tokens: number }
+    > = {};
+    const result: Event[] = [];
+    for (const row of rows) {
+      let payload = JSON.parse(row.payload);
+      if (row.type === "usage") {
+        if (payload.per_agent && payload.total) {
+          perAgent = structuredClone(payload.per_agent);
+          payload = {
+            per_agent: structuredClone(perAgent),
+            total: payload.total,
+          };
+        } else if (payload.agent_totals && payload.totals) {
+          const agent = payload.agent_totals;
+          perAgent[row.agent] = {
+            turns: agent.model_turns,
+            input_tokens: agent.tokens.prompt,
+            output_tokens: agent.tokens.completion,
+          };
+          payload = {
+            per_agent: structuredClone(perAgent),
+            total: {
+              turns: payload.totals.model_turns,
+              input_tokens: payload.totals.tokens.prompt,
+              output_tokens: payload.totals.tokens.completion,
+            },
+          };
+        }
+      }
+      if (row.id > after)
+        result.push({ ...row, verified: !!row.verified, payload });
+    }
+    return result;
   }
   close() {
     this.db.close();

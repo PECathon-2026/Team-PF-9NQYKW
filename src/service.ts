@@ -382,17 +382,11 @@ export class Service {
       ON CONFLICT(mission_id,agent) DO UPDATE SET model_turns=model_turns+excluded.model_turns, prompt_tokens=prompt_tokens+excluded.prompt_tokens, completion_tokens=completion_tokens+excluded.completion_tokens`,
       )
       .run(id, agent, modelTurns, prompt, completion);
-    const totals = this.store.usage(id);
     this.store.event(
       id,
       "usage",
       agent,
-      {
-        model_turns: modelTurns,
-        tokens: { prompt, completion },
-        agent_totals: totals.by_agent[agent],
-        totals: { model_turns: totals.model_turns, tokens: totals.tokens },
-      },
+      this.store.usage(id),
       this.store.get(id).current_rev,
       true,
     );

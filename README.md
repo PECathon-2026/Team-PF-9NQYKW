@@ -19,7 +19,7 @@ Install Bun, Python 3, and pytest (`python3 -m pip install --user pytest`; on ex
 
 For isolated operation, install Docker or Podman and make an offline image containing Python and pytest available locally. Set `DEVPILOT_CONTAINER_IMAGE` to its immutable `name@sha256:<digest>` reference. Start with `bun run start`; the API listens on 127.0.0.1:8787. The service refuses to start without a container runtime and pinned image. Set `MINIMAX_API_KEY` or `MINIMAX_TOKEN_PLAN_KEY` in the environment for MiniMax-M3.1-Flash. Set `DEVPILOT_MODEL=mock` for the deterministic fixture scripts.
 
-For trusted local development only, `DEVPILOT_ALLOW_UNISOLATED=1` explicitly permits host subprocess execution without Docker or Podman. **This provides no security boundary against repository code**: it can access host files, processes, and network under the service account. Every resulting event includes `payload.isolation: "unisolated"`. The server passes a restricted environment to subprocesses, but the flag is unsuitable for untrusted code.
+For trusted local development only, `DEVPILOT_ALLOW_UNISOLATED=1` explicitly permits host subprocess execution without Docker or Podman. **This provides no security boundary against repository code**: it can access host files, processes, and network under the service account. Each resulting `test_result` includes `payload.isolation: "unisolated"`; the usage event retains its exact cumulative payload shape. The server passes a restricted environment to subprocesses, but the flag is unsuitable for untrusted code.
 
 ## API and execution
 
