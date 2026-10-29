@@ -100,7 +100,7 @@ textarea{line-height:1.6;resize:vertical}
 /* Agent pipeline */
 .dojo{position:relative;overflow:hidden;padding:14px 32px 12px;background:linear-gradient(180deg,rgba(28,27,25,.48),rgba(24,23,22,.62));border-bottom:1px solid var(--line)}
 .cast{position:relative;display:grid;grid-template-columns:repeat(6,minmax(0,1fr))}
-.pipeline-line{position:absolute;left:0;right:0;top:96px;height:34px;pointer-events:none;z-index:1}
+.pipeline-line{position:absolute;left:0;right:0;top:116px;height:14px;pointer-events:none;z-index:0}
 .pipeline-line svg{width:100%;height:100%;overflow:visible}
 .pipeline-line path{fill:none;stroke:#c2a99a;stroke-opacity:.45;stroke-width:1;vector-effect:non-scaling-stroke}
 .pipeline-line .fork-node{fill:#c2a99a;fill-opacity:.7}
@@ -295,3 +295,5 @@ pre.diff{background:#171716;border:1px solid var(--line);border-radius:4px;paddi
 *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 .handoff-pulse,.figure-mist{display:none}
 }
+
+.dojo .agent-figure{margin-bottom:22px}

@@ -40,12 +40,12 @@ export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; sel
   const handoffTo = handoff ? CAST.findIndex((a) => a.id === (handoff.payload.to ?? handoff.payload.recipient)) : -1;
   const handoffPath = handoffFrom >= 0 && handoffTo >= 0 && handoffFrom !== handoffTo
     ? handoffFrom === 3 && handoffTo >= 4
-      ? `M700 16 H770 V${handoffTo === 4 ? 4 : 30} H${100 + handoffTo * 200}`
-      : `M${100 + handoffFrom * 200} 16 H${100 + handoffTo * 200}`
+      ? `M700 7 H770 V${handoffTo === 4 ? 2 : 12} H${100 + handoffTo * 200}`
+      : `M${100 + handoffFrom * 200} 7 H${100 + handoffTo * 200}`
     : null;
   return <section className="dojo" aria-label="Agent pipeline">
     <div className="cast">
-      <div className="pipeline-line" aria-hidden="true"><svg viewBox="0 0 1200 34" preserveAspectRatio="none"><path d="M100 16 H700 M700 16 H770 M770 16 V4 H900 M770 16 V30 H1100" /><circle cx="770" cy="16" r="3" className="fork-node" />{handoffPath && <circle className="handoff-pulse" r="3.5" key={handoff?.id}><animateMotion dur="2.5s" path={handoffPath} repeatCount="1" fill="freeze" /></circle>}</svg></div>
+      <div className="pipeline-line" aria-hidden="true"><svg viewBox="0 0 1200 14" preserveAspectRatio="none"><path d="M100 7 H700 M700 7 H770 M770 7 V2 H900 M770 7 V12 H1100" /><circle cx="770" cy="7" r="3" className="fork-node" />{handoffPath && <circle className="handoff-pulse" r="3.5" key={handoff?.id}><animateMotion dur="2.5s" path={handoffPath} repeatCount="1" fill="freeze" /></circle>}</svg></div>
       {CAST.map((c) => {
         const mood = stageState(v.events, c.id, now); const art = FIGURES[c.id]; const t = turns(v, c.id);
         const { icon: RoleIcon, accent } = ROLE_MARKS[c.id];
