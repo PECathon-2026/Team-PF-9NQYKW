@@ -1,5 +1,5 @@
 /* GitHub repository mission form: large, readable, one obvious action. */
-.rm-card{padding:28px}
+.rm-card{padding:28px;max-width:720px;margin:0 auto 20px}
 .rm-title{display:flex;align-items:center;gap:10px;font-size:24px;margin:0 0 8px;color:var(--ink)}
 .rm-lead{font-size:16px;line-height:1.55;color:var(--ink2);margin:0 0 6px;max-width:68ch}
 .rm-label{display:block;font-size:16px;font-weight:600;color:var(--ink);margin:22px 0 8px}

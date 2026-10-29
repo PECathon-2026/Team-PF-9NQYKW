@@ -167,7 +167,11 @@ function checkArgs(
 ): string[] {
   // Fixture missions ignore conftest.py. GitHub missions keep the repository's
   // own (protected, unchanged) conftest.py files, which their tests rely on.
-  const args = ["-p", "no:cacheprovider", ...(allowConftest ? [] : ["--noconftest"]), "-c", `${work}/pytest.ini`, "--rootdir", work];
+  // GitHub (repo_tests) missions run the way the repository's own CI would: its
+  // pytest config, conftest.py files and installed plugins, from the repo root.
+  const args = allowConftest
+    ? ["-p", "no:cacheprovider"]
+    : ["-p", "no:cacheprovider", "--noconftest", "-c", `${work}/pytest.ini`, "--rootdir", work];
   let targets = 0;
   for (let i = 3; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -271,12 +275,15 @@ export function makeRunner(
       const deps: string | undefined = config.deps;
       const extraEnv: Record<string, string> = {
         ...(config.src_layout ? { DEVPILOT_SRC_LAYOUT: "1" } : {}),
+        // Repo mode: let the repo's declared pytest plugins (installed in deps) load;
+        // keep coverage/tmp writes off the read-only checkout.
+        ...(conftest ? { PYTEST_DISABLE_PLUGIN_AUTOLOAD: "", COVERAGE_FILE: "/tmp/.coverage", TMPDIR: "/tmp" } : {}),
       };
       try {
         if (isolation === "unisolated")
           return await execute(
             ["python3", "-I", bootstrap, site, snapshot, ...checkArgs(argv, snapshot, work, conftest)],
-            work,
+            conftest ? snapshot : work,
             { ...environment, ...extraEnv, ...(deps ? { DEVPILOT_DEPS: deps } : {}) },
             deadline,
           );
@@ -304,7 +311,7 @@ export function makeRunner(
           "--volume",
           `${bootstrap}:/check_bootstrap.py:ro`,
           "--workdir",
-          "/check",
+          conftest ? "/repo" : "/check",
           "--env",
           "PYTHONDONTWRITEBYTECODE=1",
           "--env",
