@@ -64,7 +64,7 @@ Tokens come from the provider's reported `prompt_tokens` and `completion_tokens`
 
 ## Missions, pairing, and artifacts
 
-`POST /missions` accepts `{"repo":"stock","request":"<registered request>"}` and returns `202 {"mission_id":"m_...","id":"m_..."}`, with identical IDs. `mode` can be `multi` or `baseline`.
+`POST /missions` accepts `{"repo":"stock","request":"<registered request>"}` and returns `202 {"mission_id":"m_...","id":"m_..."}`, with identical IDs. `mode` can be `multi` or `baseline`. Unknown request text returns `400 {"error":"UNKNOWN_REQUEST","message":"...","repo":"stock","valid_requests":["<exact text>", ...]}`. `GET /requests` returns `{"requests":[{"repo","request","label","has_acceptance"}]}` for UI dropdowns (no suite paths or digests).
 
 To link a baseline, post `{"repo":"stock","request":"<same request>","mode":"baseline","paired_mission_id":"<multi-mission-id>"}`. The referenced mission must be a multi-agent run for the same repo and request, with no existing pair. The baseline starts from an independent copy of that run's original base and uses the same suite; a changed or unavailable base or suite rejects pairing. A baseline's `baseline_of` and `paired_mission_id` both point to the multi-agent run; the multi-agent projection's `paired_mission_id` points to the baseline. A pairing announcement is also appended to the multi-agent event stream. The multi-agent run's already-emitted `mission_started` event is not rewritten.
 

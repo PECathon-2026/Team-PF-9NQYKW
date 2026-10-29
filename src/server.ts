@@ -110,6 +110,9 @@ export function startServer(options: Options & { port?: number }) {
             },
           });
         }
+        if (req.method === "GET" && url.pathname === "/requests") {
+          return Response.json({ requests: listRequests(service.registry) });
+        }
         const match = url.pathname.match(
           /^\/missions\/([^/]+)(?:\/(approve))?$/,
         );
@@ -181,6 +184,18 @@ export function startServer(options: Options & { port?: number }) {
               );
             if (!Object.hasOwn(service.registry, body.repo))
               return Response.json({ error: "UNKNOWN_REPO" }, { status: 404 });
+            const registered = service.registry[body.repo].requests;
+            if (registered && !Object.hasOwn(registered, body.request))
+              return Response.json(
+                {
+                  error: "UNKNOWN_REQUEST",
+                  message:
+                    "Request text must exactly match a registered request for this repo.",
+                  repo: body.repo,
+                  valid_requests: Object.keys(registered),
+                },
+                { status: 400 },
+              );
             try {
               const mid = service.create(
                 body.repo,
@@ -275,4 +290,25 @@ if (import.meta.main) {
     mock: process.env.DEVPILOT_MODEL === "mock",
   });
   console.log("DevPilot listening on http://127.0.0.1:8787");
+}
+
+/** Public list of registered requests for UI dropdowns (no suite paths or digests). */
+export function listRequests(registry: Record<string, any>) {
+  const out: Array<{
+    repo: string;
+    request: string;
+    label: string;
+    has_acceptance: boolean;
+  }> = [];
+  for (const [repo, cfg] of Object.entries(registry)) {
+    for (const [request, entry] of Object.entries<any>(cfg?.requests || {})) {
+      out.push({
+        repo,
+        request,
+        label: cfg.label || repo,
+        has_acceptance: !!entry?.suite,
+      });
+    }
+  }
+  return out;
 }

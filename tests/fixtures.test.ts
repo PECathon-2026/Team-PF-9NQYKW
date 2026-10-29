@@ -341,3 +341,27 @@ describe("supplied fixture missions", () => {
     expect(escalation.payload.evidence_ids).toContain(disabled.id);
   }, 20000);
 });
+
+describe("request registry API", () => {
+  test("GET /requests lists registered requests without private suite details", async () => {
+    const res = await fetch(`http://127.0.0.1:${app.server.port}/requests`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const repos = body.requests.map((r: any) => r.repo).sort();
+    expect(repos).toEqual(Object.keys(registry).sort());
+    for (const r of body.requests) {
+      expect(Object.keys(registry[r.repo].requests)).toContain(r.request);
+      expect(typeof r.has_acceptance).toBe("boolean");
+    }
+    expect(JSON.stringify(body)).not.toContain("private");
+    expect(JSON.stringify(body)).not.toContain("sha256");
+  });
+
+  test("unknown request text returns 400 listing the valid requests", async () => {
+    const res = await post("/missions", { repo: "stock", request: "do something else" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("UNKNOWN_REQUEST");
+    expect(body.valid_requests).toEqual(Object.keys(registry.stock.requests));
+  });
+});

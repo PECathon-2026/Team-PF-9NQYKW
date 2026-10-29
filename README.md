@@ -161,7 +161,7 @@ ARCHITECTURE.md  design document
 
 ### API and execution
 
-- `POST /missions` accepts `{"repo":"stock","request":"<exact registered request>","mode":"multi"}`. Use `"baseline"` for the single-agent baseline. The response includes `mission_id`.
+- `POST /missions` accepts `{"repo":"stock","request":"<exact registered request>","mode":"multi"}`. Use `"baseline"` for the single-agent baseline. The response includes `mission_id`. Unknown request text returns `400 {"error":"UNKNOWN_REQUEST","message":"...","repo":"stock","valid_requests":["<exact text>", ...]}`. `GET /requests` returns `{"requests":[{"repo","request","label","has_acceptance"}]}` for UI dropdowns (no suite paths or digests).
 - `GET /missions/:id` returns mission state, usage totals, pairing fields, and an event watermark.
 - `GET /missions/:id/artifacts/:artifactId` returns a mission-scoped diff or redacted debug artifact as plain text.
 - `ws://localhost:8787/ws?mission=<id>&after=<event-id>` replays and streams events.
