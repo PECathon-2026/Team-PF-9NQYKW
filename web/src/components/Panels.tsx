@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MissionEvent } from "../lib/types";
 import { approved, col, isResolved, short, str, type View } from "../lib/derive";
-import { isUnisolated } from "../lib/types";
 
 // All dynamic text is rendered as React text nodes (never innerHTML).
 export const Prov = ({ e, stale, unisolated }: { e: { verified: boolean }; stale?: boolean; unisolated?: boolean }) => (
@@ -29,7 +28,7 @@ export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: st
         {left !== null && <span className={left < 30 ? "warn" : "muted"}>{left}s left</span>}
         <span className="muted">fix cycles {v.fixCycles}/3</span>
         {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => `${a}: ${u.turns} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tok`).join("\n")}>turns {v.usage.total.turns}/20 · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tok</span>}
-        {v.started && isUnisolated(v.started) && <span className="tag uniso" title="Runner has no sandbox isolation; results cannot satisfy the approval gate">unisolated runner</span>}
+        {v.unisolated.size > 0 && <span className="tag uniso" title="Runner has no sandbox isolation; results cannot satisfy the approval gate">unisolated runner</span>}
         <span className="muted">{mode === "replay" ? "simulated" : conn}</span>
       </div>
     </header>
@@ -43,7 +42,7 @@ export function Escalation({ v }: { v: View }) {
     <div className="banner">
       <strong>Escalated to you:</strong> {str(e.payload.reason)}
       {(e.payload.question || e.payload.action) ? <div className="q">{str(e.payload.question ?? e.payload.action)}</div> : null}
-      {(() => { const ids = Array.isArray(e.payload.relevant_event_ids) ? e.payload.relevant_event_ids : Array.isArray(e.payload.event_ids) ? e.payload.event_ids : []; return <div className="muted small">{ids.length ? `Related events: ${ids.map((i) => `#${i}`).join(" ")} · ` : ""}Start a new mission with a clarified request.</div>; })()}
+      {(() => { const ids = Array.isArray(e.payload.relevant_event_ids) ? e.payload.relevant_event_ids : Array.isArray(e.payload.event_ids) ? e.payload.event_ids : []; return <div className="muted small">{[ids.length ? `Related events: ${ids.map((i) => `#${i}`).join(" ")}` : "", e.payload.reason === "AMBIGUOUS_REQUEST" ? "Start a new mission with a clarified request." : ""].filter(Boolean).join(" · ")}</div>; })()}
     </div>
   );
 }
