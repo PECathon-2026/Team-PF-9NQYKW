@@ -56,7 +56,7 @@ export default function App() {
   return (
     <div className="app">
       <nav className="top">
-        <span className="brand"><span className="mon">侍</span>DevPilot</span>
+        <span className="brand"><span className="mon" aria-hidden="true">D</span>DevPilot</span>
         <button className={tab === "mission" ? "tab on" : "tab"} onClick={() => setTab("mission")}>Mission</button>
         <button className={tab === "compare" ? "tab on" : "tab"} onClick={() => setTab("compare")}>Compare</button>
         <span className="grow" />

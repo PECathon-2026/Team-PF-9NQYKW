@@ -118,7 +118,10 @@ export function derive(input: MissionEvent[]): View {
     : escalations.length ? "ESCALATED" : approvalResult ? (approved(approvalResult) ? "APPLYING" : "REJECTED")
     : pendingApproval ? "AWAITING_APPROVAL" : diffs.length ? (tests.some((t) => t.code_rev === currentRev) ? "EVALUATING" : "IMPLEMENTING")
     : plan ? "PLANNING" : started ? "PLANNING" : "WAITING";
-  const fixCycles = Math.max(0, diffs.length - 1);
+  // Each repair dispatch is one cycle; findings and revisions can be many per dispatch.
+  const fixCycles = new Set(events.filter((e) => e.type === "agent_msg"
+    && ["orchestrator", "shadow_review", "shadow_security", "verifier"].includes(e.agent)
+    && (e.payload.to ?? e.payload.recipient) === "samurai").map((e) => e.id)).size;
   return { events, staleIds, staleBy, started, plan, tasks: [...tasks.values()], checks, findings, diffs, currentRev, pendingApproval, approvalResult, escalations, done, state, gate: { ok: reasons.length === 0, reasons }, usage, budget, unisolated, pairedMissionId: str(started?.payload.paired_mission_id) || str(started?.payload.baseline_of) || undefined, fixCycles, toolFailures };
 }
 export const short = (rev: string | null | undefined) => (rev ? (rev.length > 18 ? rev.slice(0, 18) + "…" : rev) : "—");
