@@ -81,7 +81,7 @@ export default function App() {
     <aside className="sidebar">
       <div className="brand-row"><button className="brand-mark" onClick={() => navigate("mission")} aria-label="DevPilot home">D</button><span className="brand-name">DevPilot</span><button className="icon-button collapse" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
       <div className="side-nav">
-        <button className={route === "mission" ? "side-link active" : "side-link"} onClick={() => navigate("mission")} title="Mission"><LayoutDashboard size={17} /><span>Mission</span></button>
+        <button className={route === "mission" ? "side-link active" : "side-link"} onClick={() => navigate("mission")} title="Missions"><LayoutDashboard size={17} /><span>Missions</span></button>
         <button className={route === "compare" ? "side-link active" : "side-link"} onClick={() => navigate("compare")} title="Compare"><Columns2 size={17} /><span>Compare</span></button>
         <button className={mode === "replay" ? "side-link replay-active" : "side-link"} onClick={toggleReplay} title={mode === "replay" ? "Exit demo replay" : "Start demo replay"} aria-pressed={mode === "replay"}><CirclePlay size={17} /><span>Demo replay</span>{mode === "replay" && <small>On</small>}</button>
       </div>

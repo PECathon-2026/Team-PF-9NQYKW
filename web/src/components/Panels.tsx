@@ -20,6 +20,10 @@ const COLUMNS: Record<string, string> = { pending: "Pending", ready: "Ready", ru
 export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: string; now: number }) {
   const deadline = Number(v.started?.payload.deadline ?? 0);
   const left = deadline ? Math.max(0, Math.round((deadline - (v.done?.ts ?? now)) / 1000)) : null;
+  const terminal = !!v.done || v.state === "ESCALATED" || v.state === "REJECTED";
+  const endTs = v.done?.ts ?? v.events[v.events.length - 1]?.ts;
+  const wall = Number(v.done?.payload.wall_elapsed_ms);
+  const took = terminal && v.started && endTs ? Math.max(0, Math.round((Number.isFinite(wall) && wall > 0 ? wall : endTs - v.started.ts) / 1000)) : null;
   return (
     <header className="mhead">
       <div>
@@ -29,7 +33,7 @@ export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: st
       <div className="hstats">
         <span className={`state s-${v.state.toLowerCase()}`}>{stateLabel(v.state)}</span>
         <span className="muted" title={v.currentRev ?? undefined}>Revision <code>{short(v.currentRev)}</code></span>
-        {left !== null && <span className={left < 30 ? "warn" : "muted"} title="Time left before the mission deadline">{clock(left)} left</span>}
+        {took !== null ? <span className="muted" title="Total mission duration">Finished in {clock(took)}</span> : left !== null && <span className={left < 30 ? "warn" : "muted"} title="Time left before the mission deadline">{clock(left)} left</span>}
         <span className="muted">Fix cycles {v.fixCycles}/3</span>
         {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => `${agentName(a)}: ${u.pass_turns ?? u.turns}${v.budget?.[a] !== undefined && (u.pass_turns !== undefined || u.turns <= v.budget[a]) ? `/${v.budget[a]}` : ""} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tokens`).join("\n")}>{plural(v.usage.total.turns, "turn")} · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tokens</span>}
         {v.unisolated.size > 0 && <span className="tag uniso" title="This runner has no sandbox isolation. Its results cannot satisfy the approval gate.">unisolated runner</span>}
