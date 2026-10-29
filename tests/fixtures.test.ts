@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { loadRegistry } from "../src/registry";
 import { startServer } from "../src/server";
 import { makeRunner, suiteDigest } from "../src/runner";
+import type { Runner } from "../src/runner";
+import { fixtureScript } from "../src/mock-fixtures";
 
 const fixtureRoot = resolve(
   process.env.DEVPILOT_FIXTURES_DIR || "../devpilot-fixtures",
@@ -42,6 +44,140 @@ async function post(path: string, body: unknown) {
 }
 
 describe("supplied fixture missions", () => {
+  test("stock completes every planned task with gate evidence before requesting approval", async () => {
+    const stock = registry.stock;
+    const request = Object.keys(stock.requests)[0]!;
+    const config = stock.requests[request];
+    const script = fixtureScript("stock", request);
+    script.shogun = [
+      {
+        role: "assistant",
+        content: JSON.stringify({
+          criteria: config.criteria,
+          tasks: [
+            { id: "T1", title: "Fix reservations", role: "samurai" },
+            {
+              id: "T2",
+              title: "Verify all stock tests pass",
+              role: "verifier",
+              depends_on: ["T1"],
+            },
+            {
+              id: "T3",
+              title: "Review the change",
+              role: "shadow_review",
+              depends_on: ["T1"],
+            },
+          ],
+        }),
+      },
+    ];
+    let acceptancePasses = true;
+    const runner: Runner = {
+      isolation: "isolated",
+      async check(snapshot) {
+        const fixed = readFileSync(join(snapshot, "stock.py"), "utf8").includes(
+          "if qty > available:",
+        );
+        return { exitCode: fixed ? 0 : 1, output: "", duration: 0 };
+      },
+      async acceptance() {
+        return {
+          passed: acceptancePasses,
+          criteria: [{ id: "mock_acceptance", passed: acceptancePasses }],
+        };
+      },
+    };
+    const customStock = {
+      ...stock,
+      requests: { [request]: { ...config, mock_script: script } },
+    };
+    const local = startServer({
+      root: join(root, "stock-tasks"),
+      registry: { stock: customStock },
+      runner,
+      mock: true,
+      port: 0,
+    });
+    try {
+      const create = async () => {
+        const response = await fetch(
+          `http://127.0.0.1:${local.server.port}/missions`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ repo: "stock", request }),
+          },
+        );
+        expect(response.status).toBe(202);
+        return ((await response.json()) as any).mission_id as string;
+      };
+      const missionId = await create();
+      await waitFor(() =>
+        ["AWAITING_APPROVAL", "ESCALATED"].includes(
+          local.service.store.get(missionId).state,
+        ),
+      );
+      expect(local.service.store.get(missionId).state).toBe(
+        "AWAITING_APPROVAL",
+      );
+      const events = local.service.store.events(missionId);
+      const plan = events.find((event) => event.type === "plan")!;
+      const gate = events.find((event) => event.type === "approval_needed")!;
+      expect(plan.payload.tasks.map((task: any) => task.id)).toEqual([
+        "T1",
+        "T2",
+        "T3",
+      ]);
+      expect(gate.payload.evidence_ids.length).toBeGreaterThan(0);
+      for (const task of plan.payload.tasks) {
+        const completed = events.filter(
+          (event) =>
+            event.type === "task_update" &&
+            event.payload.task_id === task.id &&
+            event.payload.status === "completed",
+        );
+        expect(completed).toHaveLength(1);
+        expect(completed[0]!.id).toBeLessThan(gate.id);
+        expect(completed[0]!.task_id).toBe(task.id);
+        expect(completed[0]!.payload.reason_event_ids).toEqual(
+          gate.payload.evidence_ids,
+        );
+        expect(completed[0]!.payload.previous_status).toBe(
+          task.id === "T1" ? "in_progress" : "pending",
+        );
+        expect(completed[0]!.code_rev).toBe(gate.code_rev);
+      }
+      acceptancePasses = false;
+      const failedId = await create();
+      await waitFor(
+        () => local.service.store.get(failedId).state === "ESCALATED",
+      );
+      const failedEvents = local.service.store.events(failedId);
+      expect(
+        failedEvents.some((event) => event.type === "approval_needed"),
+      ).toBe(false);
+      expect(
+        failedEvents.some(
+          (event) =>
+            event.type === "task_update" &&
+            ["T2", "T3"].includes(event.payload.task_id) &&
+            event.payload.status === "completed",
+        ),
+      ).toBe(false);
+      expect(
+        failedEvents.some(
+          (event) =>
+            event.type === "task_update" &&
+            event.payload.task_id === "T1" &&
+            event.payload.status === "blocked",
+        ),
+      ).toBe(true);
+    } finally {
+      local.close();
+    }
+  }, 20000);
+
   for (const scenario of ["cart", "stats", "stock", "notes", "titles"]) {
     test(`${scenario}: real project and private pytest checks`, async () => {
       const config = registry[scenario];

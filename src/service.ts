@@ -2045,20 +2045,6 @@ export class Service {
           this.store.db
             .query("UPDATE missions SET evidence=? WHERE id=?")
             .run(JSON.stringify(ids), mid);
-          this.store.event(
-            mid,
-            "task_update",
-            "orchestrator",
-            {
-              task_id: implementationTask.id,
-              previous_status: "in_progress",
-              status: "completed",
-              reason_event_ids: ids,
-            },
-            frozen,
-            true,
-            implementationTask.id,
-          );
           if (this.store.isolation !== "isolated") {
             this.escalate(
               mid,
@@ -2069,6 +2055,34 @@ export class Service {
             return;
           }
           const deadlineRemaining = this.pauseDeadline(mid);
+          const taskStatuses = new Map<string, string>(
+            tasks.map((task: any) => [task.id, task.status]),
+          );
+          for (const event of this.store.events(mid)) {
+            if (
+              event.type === "task_update" &&
+              taskStatuses.has(event.payload.task_id)
+            )
+              taskStatuses.set(event.payload.task_id, event.payload.status);
+          }
+          for (const task of tasks) {
+            const previousStatus = taskStatuses.get(task.id)!;
+            if (previousStatus === "completed") continue;
+            this.store.event(
+              mid,
+              "task_update",
+              "orchestrator",
+              {
+                task_id: task.id,
+                previous_status: previousStatus,
+                status: "completed",
+                reason_event_ids: ids,
+              },
+              frozen,
+              true,
+              task.id,
+            );
+          }
           this.state(mid, "AWAITING_APPROVAL");
           const approval = {
             id: id("approval"),
