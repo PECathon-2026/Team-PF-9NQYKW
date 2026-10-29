@@ -11,9 +11,10 @@ function build(mission: string, drafts: Draft[], t0: number): MissionEvent[] {
 // Event ids are 1001 + 3*index; helpers reference earlier events by index.
 const E = (i: number) => 1001 + i * 3;
 const U = (t: number, i: number, o: number) => ({ turns: t, input_tokens: i, output_tokens: o });
+const BUDGET = { shogun: 6, samurai: 10, shadow_review: 8, shadow_security: 8 };
 const usage = (per_agent: Record<string, ReturnType<typeof U>>): Draft => {
   const v = Object.values(per_agent);
-  return ["usage", "system", null, null, true, { per_agent, total: U(v.reduce((a, x) => a + x.turns, 0), v.reduce((a, x) => a + x.input_tokens, 0), v.reduce((a, x) => a + x.output_tokens, 0)) }];
+  return ["usage", "system", null, null, true, { per_agent, budget: BUDGET, total: U(v.reduce((a, x) => a + x.turns, 0), v.reduce((a, x) => a + x.input_tokens, 0), v.reduce((a, x) => a + x.output_tokens, 0)) }];
 };
 
 export function stockScript(mission: string, t0: number): MissionEvent[] {

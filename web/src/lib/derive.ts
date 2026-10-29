@@ -1,4 +1,4 @@
-import { isUnisolated, type MissionEvent, type UsageCount } from "./types";
+import { isBudget, isUnisolated, type MissionEvent, type UsageCount } from "./types";
 
 const ids = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : []);
 export const str = (v: unknown, d = ""): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : d);
@@ -16,7 +16,7 @@ export interface View {
   started?: MissionEvent; plan?: MissionEvent; tasks: Task[]; checks: CheckRow[]; findings: Finding[];
   diffs: MissionEvent[]; currentRev: string | null; pendingApproval?: MissionEvent; approvalResult?: MissionEvent;
   escalations: MissionEvent[]; done?: MissionEvent; state: string; gate: { ok: boolean; reasons: string[] };
-  usage?: { total: UsageCount; per_agent: Record<string, UsageCount> }; pairedMissionId?: string; unisolated: Set<number>;
+  usage?: { total: UsageCount; per_agent: Record<string, UsageCount> }; budget?: Record<string, number>; pairedMissionId?: string; unisolated: Set<number>;
   fixCycles: number; toolFailures: number;
 }
 
@@ -27,7 +27,7 @@ export function derive(input: MissionEvent[]): View {
   const tasks = new Map<string, Task>(); const diffs: MissionEvent[] = []; const escalations: MissionEvent[] = [];
   let pendingApproval: MissionEvent | undefined; let approvalResult: MissionEvent | undefined; let done: MissionEvent | undefined;
   const findingsMap = new Map<string, Finding>(); const tests: MissionEvent[] = [];
-  let usage: View["usage"]; const unisolated = new Set<number>();
+  let usage: View["usage"]; let budget: View["budget"]; const unisolated = new Set<number>();
   let toolFailures = 0; let lastStaleId = 0;
 
   for (const e of events) {
@@ -50,7 +50,7 @@ export function derive(input: MissionEvent[]): View {
         const t = tasks.get(id) ?? { id, title: id, role: e.agent, status: "pending", deps: [] };
         t.status = str(p.new_status ?? p.status, t.status); tasks.set(id, t); break;
       }
-      case "usage": usage = p as unknown as View["usage"]; break;
+      case "usage": usage = { total: p.total, per_agent: p.per_agent } as View["usage"]; if (isBudget(p.budget)) budget = p.budget; break;
       case "mission_done": done = e; if (p.total && p.per_agent) usage = { total: p.total, per_agent: p.per_agent } as View["usage"]; break;
       case "tool_result": if (p.ok === false) toolFailures++; break;
       case "test_result": tests.push(e); break;
@@ -119,6 +119,6 @@ export function derive(input: MissionEvent[]): View {
     : pendingApproval ? "AWAITING_APPROVAL" : diffs.length ? (tests.some((t) => t.code_rev === currentRev) ? "EVALUATING" : "IMPLEMENTING")
     : plan ? "PLANNING" : started ? "PLANNING" : "WAITING";
   const fixCycles = Math.max(0, diffs.length - 1);
-  return { events, staleIds, staleBy, started, plan, tasks: [...tasks.values()], checks, findings, diffs, currentRev, pendingApproval, approvalResult, escalations, done, state, gate: { ok: reasons.length === 0, reasons }, usage, unisolated, pairedMissionId: str(started?.payload.paired_mission_id) || str(started?.payload.baseline_of) || undefined, fixCycles, toolFailures };
+  return { events, staleIds, staleBy, started, plan, tasks: [...tasks.values()], checks, findings, diffs, currentRev, pendingApproval, approvalResult, escalations, done, state, gate: { ok: reasons.length === 0, reasons }, usage, budget, unisolated, pairedMissionId: str(started?.payload.paired_mission_id) || str(started?.payload.baseline_of) || undefined, fixCycles, toolFailures };
 }
 export const short = (rev: string | null | undefined) => (rev ? (rev.length > 18 ? rev.slice(0, 18) + "…" : rev) : "—");

@@ -13,9 +13,13 @@ export interface MissionEvent {
 }
 export interface UsageCount { turns: number; input_tokens: number; output_tokens: number }
 const isCount = (c: unknown): c is UsageCount => { const o = c as UsageCount; return !!o && [o.turns, o.input_tokens, o.output_tokens].every((n) => typeof n === "number" && n >= 0); };
-/** usage payload: cumulative {per_agent: {<agent>: UsageCount}, total: UsageCount}. */
+/** Optional per-role turn budget: {<agent>: non-negative integer}. */
+export const isBudget = (b: unknown): b is Record<string, number> => typeof b === "object" && b !== null && !Array.isArray(b)
+  && Object.entries(b as object).every(([k, n]) => (AGENTS as readonly string[]).includes(k) && Number.isInteger(n) && n >= 0);
+/** usage payload: cumulative {per_agent: {<agent>: UsageCount}, total: UsageCount, budget?: {<agent>: n}}. */
 export const isUsagePayload = (p: Record<string, unknown>) => isCount(p.total) && typeof p.per_agent === "object" && p.per_agent !== null
-  && Object.entries(p.per_agent as object).every(([k, v]) => (AGENTS as readonly string[]).includes(k) && isCount(v));
+  && Object.entries(p.per_agent as object).every(([k, v]) => (AGENTS as readonly string[]).includes(k) && isCount(v))
+  && (p.budget === undefined || isBudget(p.budget));
 export const isUnisolated = (e: MissionEvent) => e.isolation === "unisolated" || e.payload.isolation === "unisolated";
 export const isEvent = (x: unknown): x is MissionEvent => {
   const e = x as MissionEvent;

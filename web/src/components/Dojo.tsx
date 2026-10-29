@@ -61,6 +61,20 @@ function lineOf(v: View, a: Agent): string {
   return e.type.replace(/_/g, " ");
 }
 
+/** Per-role turns: "used/budget" with a bar when the backend sends a budget, else just "used" (omitted if never used). */
+function TurnMeter({ v, a }: { v: View; a: Agent }) {
+  const used = v.usage?.per_agent[a]?.turns; const cap = v.budget?.[a];
+  if (used === undefined && cap === undefined) return null;
+  const u = used ?? 0;
+  if (cap === undefined) return <small className="turns">{u} turns</small>;
+  const pct = cap > 0 ? Math.min(100, (u / cap) * 100) : 100;
+  return (
+    <small className={`turns${u >= cap ? " spent" : u >= cap - 1 ? " low" : ""}`} title={`${u} of ${cap} turns used`}>
+      {u}/{cap} turns<span className="tbar" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
+    </small>
+  );
+}
+
 const str2 = (x: unknown) => (typeof x === "string" ? x : "");
 export function Dojo({ v, now }: { v: View; now: number }) {
   const [slash, setSlash] = useState<{ key: number; who: Agent } | null>(null);
@@ -81,7 +95,7 @@ export function Dojo({ v, now }: { v: View; now: number }) {
             <figure key={c.id} className={`actor m-${mood}`}>
               {slash?.who === c.id && <svg key={slash.key} className="slash" viewBox="0 0 100 100" aria-hidden="true"><path d="M8 82 Q50 50 94 14" /></svg>}
               <Chibi armor={c.armor} prop={c.prop} mood={mood} />
-              <figcaption><strong>{c.name}</strong><span>{c.role}</span><em>{mood === "work" ? lineOf(v, c.id) : mood === "sad" ? "check failed" : mood === "joy" ? "victory" : "resting"}</em></figcaption>
+              <figcaption><strong>{c.name}</strong><span>{c.role}</span><TurnMeter v={v} a={c.id} /><em>{mood === "work" ? lineOf(v, c.id) : mood === "sad" ? "check failed" : mood === "joy" ? "victory" : "resting"}</em></figcaption>
             </figure>
           );
         })}

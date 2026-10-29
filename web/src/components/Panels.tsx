@@ -27,7 +27,7 @@ export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: st
         <span className="muted">rev <code>{short(v.currentRev)}</code></span>
         {left !== null && <span className={left < 30 ? "warn" : "muted"}>{left}s left</span>}
         <span className="muted">fix cycles {v.fixCycles}/3</span>
-        {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => `${a}: ${u.turns} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tok`).join("\n")}>turns {v.usage.total.turns}/20 · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tok</span>}
+        {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => `${a}: ${u.turns}${v.budget?.[a] !== undefined ? `/${v.budget[a]}` : ""} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tok`).join("\n")}>turns {v.usage.total.turns} · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tok</span>}
         {v.unisolated.size > 0 && <span className="tag uniso" title="Runner has no sandbox isolation; results cannot satisfy the approval gate">unisolated runner</span>}
         <span className="muted">{mode === "replay" ? "simulated" : conn}</span>
       </div>
