@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { Crown, Eye, LockKeyhole, ScrollText, Shield, Sword, type LucideIcon } from "lucide-react";
 import shogun from "../assets/agents/shogun@192.webp";
 import samurai from "../assets/agents/samurai@192.webp";
 import sentinel from "../assets/agents/sentinel@192.webp";
@@ -17,6 +18,14 @@ export const CAST: { id: FigureAgent; name: string; role: string }[] = [
 ].map((c) => ({ ...c, id: c.id as FigureAgent, name: AGENT_NAMES[c.id as FigureAgent] }));
 // 192px-tall art rendered at 96px, so one asset covers 1x and 2x displays.
 const FIGURES: Record<FigureAgent, string> = { shogun, samurai, sentinel, verifier, shadow_review: shadowReview, shadow_security: shadowSecurity };
+const ROLE_MARKS: Record<FigureAgent, { icon: LucideIcon; accent: string }> = {
+  shogun: { icon: Crown, accent: "#ac5761" },
+  samurai: { icon: Sword, accent: "#c0745e" },
+  sentinel: { icon: Shield, accent: "#af8c59" },
+  verifier: { icon: ScrollText, accent: "#b9a780" },
+  shadow_review: { icon: Eye, accent: "#a383a1" },
+  shadow_security: { icon: LockKeyhole, accent: "#7f989a" },
+};
 const STATUS = { idle: "Idle", work: "Working", done: "Done", failed: "Failed" } as const;
 function turns(v: View, a: Agent) {
   const usage = v.usage?.per_agent[a]; const used = usage?.pass_turns ?? usage?.turns; const cap = v.budget?.[a];
@@ -39,10 +48,11 @@ export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; sel
       <div className="pipeline-line" aria-hidden="true"><svg viewBox="0 0 1200 34" preserveAspectRatio="none"><path d="M100 16 H700 M700 16 H770 M770 16 V4 H900 M770 16 V30 H1100" /><circle cx="770" cy="16" r="3" className="fork-node" />{handoffPath && <circle className="handoff-pulse" r="3.5" key={handoff?.id}><animateMotion dur="2.5s" path={handoffPath} repeatCount="1" fill="freeze" /></circle>}</svg></div>
       {CAST.map((c) => {
         const mood = stageState(v.events, c.id, now); const art = FIGURES[c.id]; const t = turns(v, c.id);
+        const { icon: RoleIcon, accent } = ROLE_MARKS[c.id];
         const style = c.id === "samurai" ? { "--figure-mask": `url("${art}")` } as CSSProperties : undefined;
-        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}: ${c.role.toLowerCase()}. ${STATUS[mood]}. Show activity`} title={`${c.role}. Select to show activity.`}>
+        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} style={{ "--role-accent": accent } as CSSProperties} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}: ${c.role.toLowerCase()}. ${STATUS[mood]}. Show activity`} title={`${c.role}. Select to show activity.`}>
           <span className={`agent-figure ${mood}`} aria-hidden="true"><span className="figure-mist" /><span className={`figure-art${c.id === "samurai" ? " samurai" : ""}`} style={style}><img src={art} alt="" /></span></span>
-          <span className="actor-title">{c.name}</span>
+          <span className="actor-title"><RoleIcon size={12} aria-hidden="true" focusable="false" /><span>{c.name}</span></span>
           <span className={`actor-status status-${mood}`}>{STATUS[mood]}{t && <span className={`turns ${t.level}`} title={t.title}> · {t.label}</span>}</span>
         </button>;
       })}

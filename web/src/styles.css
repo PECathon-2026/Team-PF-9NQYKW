@@ -119,7 +119,9 @@ textarea{line-height:1.6;resize:vertical}
 .agent-figure.failed .figure-art{opacity:1;filter:grayscale(.75) sepia(.35) saturate(1.1) hue-rotate(325deg) brightness(.85)}
 .agent-figure.idle .figure-art{animation:figure-breathe 5s ease-in-out infinite}
 .agent-figure.work .samurai::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:0;background:linear-gradient(110deg,transparent 35%,rgba(255,226,183,.55) 49%,transparent 58%);background-size:250% 100%;mask-image:var(--figure-mask);mask-size:100% 100%;mask-repeat:no-repeat;-webkit-mask-image:var(--figure-mask);-webkit-mask-size:100% 100%;-webkit-mask-repeat:no-repeat;animation:katana-glint 9s ease-in-out infinite}
-.actor-title{position:relative;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d9d0c6;font:600 16px/1.2 var(--display);letter-spacing:.01em;transition:color var(--fast)}
+.actor-title{position:relative;display:flex;align-items:center;gap:4px;max-width:100%;min-width:0;color:#d9d0c6;font:600 16px/1.2 var(--display);letter-spacing:.01em;transition:color var(--fast)}
+.actor-title svg{flex:none;color:var(--role-accent)}
+.actor-title span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .actor:hover .actor-title,.actor.selected .actor-title{color:#fff}
 .actor-status{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut);font-size:10.5px;line-height:1.35;font-variant-numeric:tabular-nums;transition:color var(--med)}
 .status-work{color:#e3a58f}
