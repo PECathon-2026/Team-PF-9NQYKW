@@ -1,27 +1,165 @@
-# DevPilot backend
+# DevPilot
 
-DevPilot is a Bun/TypeScript service for registered, managed local repositories. Shogun plans, Samurai edits, Sentinel runs project checks, Verifier runs acceptance tests, and Reviewer and Security examine the candidate in parallel. SQLite stores the shared event log and mission projection. The baseline check runs before planning, and its event ID is included in the plan. Failed checks and findings go back to the editor. A candidate with no diff escalates with `NO_CHANGES`. A human must approve the checked revision before the mission’s own managed target changes. Each new fixture mission starts from a fresh copy of the registered seed.
+A multi-agent engineering system that plans, edits, tests and reviews a change to a local repository, then waits for a human to approve the exact revision it checked. Built for PECathon 2026, problem statement PS-001.
+
+![DevPilot approval gate](docs/media/approval-gate.webp)
+
+Demo video (60 s): [docs/media/devpilot-demo.mp4](docs/media/devpilot-demo.mp4)
+
+## The agents
+
+A deterministic TypeScript orchestrator schedules six roles. The model roles use MiniMax-M3.1-Flash with tool calling; Samurai is the only role that can edit files.
+
+| | Agent | Role | What it does |
+|---|---|---|---|
+| <img src="web/src/assets/agents/shogun@192.webp" height="48" alt=""> | Shogun | Planner | Reads the request and the baseline check, writes acceptance criteria and tasks |
+| <img src="web/src/assets/agents/samurai@192.webp" height="48" alt=""> | Samurai | Coder | The single writer. Edits through staged, path-confined copies and may run only the registered check |
+| <img src="web/src/assets/agents/sentinel@192.webp" height="48" alt=""> | Sentinel | Tester | Runs the project's own checks against the frozen candidate revision |
+| <img src="web/src/assets/agents/verifier@192.webp" height="48" alt=""> | Verifier | Acceptance | Runs the private acceptance suite, isolated from candidate code |
+| <img src="web/src/assets/agents/shadow_review@192.webp" height="48" alt=""> | Shadow Review | Code review | Reviews the full diff; in-scope findings backed by file and line or a failing case send work back |
+| <img src="web/src/assets/agents/shadow_security@192.webp" height="48" alt=""> | Shadow Security | Security review | Reviews the diff together with a pattern scanner; scanner hits are advisory |
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  API --> Orchestrator --> Shogun --> Samurai
-  Samurai --> Sentinel & Verifier & Reviewer & Security
-  Sentinel & Verifier & Reviewer & Security --> Orchestrator
-  Orchestrator --> SQLite --> WebSocket
-  Orchestrator --> Approval --> ManagedRepository
+  H[Human] --> UI[React UI :5173]
+  UI -->|POST /missions| API[Bun API :8787]
+  API --> O[Orchestrator]
+  O --> SH[Shogun: plan]
+  SH --> SA[Samurai: edit]
+  SA --> F{{Frozen revision}}
+  F --> SE[Sentinel: checks]
+  F --> VE[Verifier: acceptance]
+  F --> SR[Shadow Review]
+  F --> SS[Shadow Security]
+  SE & VE & SR & SS -->|failure or blocking finding| SA
+  SE & VE & SR & SS -->|all evidence current| G{Approval gate}
+  G -->|approve| AP[Atomic apply to mission target]
+  G -->|reject| X[Mission rejected]
+  O <--> DB[(SQLite event log)]
+  DB -->|WebSocket replay + live| UI
 ```
 
-## Run and test
+- Every fact is an event in SQLite. The UI replays and streams them over WebSocket.
+- Any edit makes earlier evidence stale. Approval is offered only when the current revision has passing checks, passing acceptance and no blocking findings.
+- At most three fix cycles. After that, or on a deadline, turn limit or missing isolation, the mission escalates instead of asking for approval.
+- On approval the service re-checks the candidate and base hashes, then swaps `runtime/missions/<id>/target/current` atomically. The seed repo and other missions are untouched.
 
-Install Bun, Python 3, and pytest (`python3 -m pip install --user pytest`; on externally managed Python installations add `--break-system-packages` when appropriate). Run `bun install` to install dependencies, then `bun test`. The integration tests use the fixture directory and explicitly enable the unisolated development runner.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
 
-`config/repositories.json` refers to the fixture manifest at `fixtures/registry.json` relative to `DEVPILOT_FIXTURES_DIR` (default `../devpilot-fixtures`). That manifest registers the exact requests, check arguments, private suite locations, and pinned suite digests. The registry and suites remain outside agent snapshots. Override the config path with `DEVPILOT_REGISTRY`, and the runtime directory with `DEVPILOT_RUNTIME`.
+## Isolation
 
-For isolated operation, install Docker or Podman and make an offline image containing Python and pytest available locally. Set `DEVPILOT_CONTAINER_IMAGE` to its immutable `name@sha256:<digest>` reference. Start with `bun run start`; the API listens on 127.0.0.1:8787. The service refuses to start without a container runtime and pinned image. Set `MINIMAX_API_KEY` or `MINIMAX_TOKEN_PLAN_KEY` in the environment for MiniMax-M3.1-Flash. Set `DEVPILOT_MODEL=mock` for the deterministic fixture scripts. MiniMax reasoning effort defaults to `low` to fit the mission deadline; set `DEVPILOT_REASONING_EFFORT` to `low`, `medium`, `high`, `xhigh`, or `max` to change it.
+Project checks and acceptance tests run in rootless Podman (or Docker) containers with networking disabled, bounded resources and a read-only candidate mount. The service refuses to start without a rootless runtime and an image pinned by digest (`DEVPILOT_CONTAINER_IMAGE=name@sha256:...`).
+
+The image only needs Python 3 and pytest. The one used during development was `python:3.12-slim` plus `pip install pytest`:
+
+```sh
+printf 'FROM python:3.12-slim\nRUN pip install --no-cache-dir pytest\n' | podman build -t devpilot-py:1 -
+podman image inspect devpilot-py:1 --format '{{.Digest}}'
+```
+
+For acceptance, pytest and the candidate run in separate offline containers. Candidate code is reached only through a restricted RPC proxy and never sees the private suite. Every `test_result` event carries `isolation: "isolated"` or `"unisolated"`.
 
 For trusted local development only, `DEVPILOT_ALLOW_UNISOLATED=1` explicitly permits host subprocess execution without Docker or Podman. **This provides no security boundary against repository code**: it can access host files, processes, and network under the service account. Each resulting `test_result` includes `payload.isolation: "unisolated"`. Such missions escalate with `ISOLATION_UNAVAILABLE` and cannot enter the approval gate. The server passes a restricted environment to subprocesses, but the flag is unsuitable for untrusted code.
 
-## API and execution
+## Quick start
+
+Requirements: Bun, Python 3 with pytest, and rootless Podman or Docker.
+
+```sh
+bun install
+cd web && bun install && cd ..
+```
+
+Environment variables (names only; set the values in your shell, never commit them):
+
+| Variable | Purpose |
+|---|---|
+| `MINIMAX_API_KEY` or `MINIMAX_TOKEN_PLAN_KEY` | MiniMax credentials for MiniMax-M3.1-Flash |
+| `DEVPILOT_MODEL` | Set to `mock` for deterministic scripted runs |
+| `DEVPILOT_CONTAINER_IMAGE` | Pinned image, `name@sha256:<digest>` |
+| `DEVPILOT_RUNTIME` | Runtime directory (SQLite DB, mission copies) |
+| `DEVPILOT_FIXTURES_DIR` | Fixture directory, default `../devpilot-fixtures` |
+| `DEVPILOT_REGISTRY` | Override `config/repositories.json` |
+| `DEVPILOT_REASONING_EFFORT` | `low` (default) to `max` |
+| `DEVPILOT_ALLOWED_ORIGINS` | Extra browser origins; default allows :5173 |
+
+```sh
+bun run start            # API and WebSocket on 127.0.0.1:8787
+cd web && bun run dev    # UI on http://localhost:5173
+```
+
+The UI also has a demo replay (`?replay=1`), labelled "Demo replay (simulated)", which plays a scripted mission without the backend.
+
+## Demo repositories
+
+The fixture registry contains five seed repositories. Each one has an exact registered request, a check command and a private acceptance suite pinned by digest:
+
+| Repo | Request |
+|---|---|
+| `stock` | `reserve(qty, available)` rejects valid reservations; fix the defect |
+| `stats` | Investigate the defect marked `# bug` in `stats.py` and fix it if confirmed |
+| `cart` | Add percentage and fixed-amount discount codes to the cart |
+| `notes` | Fix path handling so notes cannot escape the store root (absolute paths, symlinks) |
+| `titles` | "clean up the titles", a deliberately vague request |
+
+Live runs from the command line: `scripts/live-stock-mission.ts`, `scripts/live-notes-mission.ts`, `scripts/live-parallel-missions.ts`, plus `scripts/live-plan-check.ts`, which makes a single planning call.
+
+## Tests
+
+```sh
+bun test                 # 74 tests across 5 files
+cd web && bun test && bunx tsc --noEmit -p . && bun run build
+```
+
+The integration tests use the fixture directory and explicitly enable the unisolated development runner.
+
+## Live results
+
+Multi-agent missions on MiniMax-M3.1-Flash. All four reached the approval gate and finished COMPLETED after human approval.
+
+| Repo | Model turns | Send-backs | Active time |
+|---|---:|---:|---:|
+| notes | 39 | 1 | 242 s |
+| stock | 15 | 0 | 97 s |
+| cart | 20 | 0 | 125 s |
+| stats | 18 | 0 | 111 s |
+
+| Evidence | Activity | Completed |
+|---|---|---|
+| ![](docs/media/evidence.webp) | ![](docs/media/activity.webp) | ![](docs/media/completed.webp) |
+
+## Event contract
+
+Each WebSocket message is `{id, ts, mission_id, type, agent, task_id, code_rev, verified, payload}`. `id` is a global, increasing SQLite ID; resume with `/ws?mission=<id>&after=<event-id>` and deduplicate by `id`. `verified` means the service observed the fact itself. Plans, messages and review conclusions are recorded as claims.
+
+Event types: `mission_started`, `plan`, `task_update`, `agent_msg`, `tool_call`, `tool_result`, `test_result`, `finding`, `diff`, `approval_needed`, `approval_result`, `escalation`, `stale`, `usage`, `mission_done`.
+
+Full payloads, usage accounting and pairing: [docs/EVENTS.md](docs/EVENTS.md).
+
+## Project structure
+
+```
+src/             Bun backend: server, orchestrator (service.ts), model adapter, tools, runner, verifier, SQLite store
+src/verification acceptance harness and RPC bridge
+tests/           backend, fixture, structured-output and verification tests
+config/          repository registry pointer
+scripts/         live mission scripts
+web/             React + Vite UI (mission view, agent pipeline, approval gate, demo replay)
+docs/            EVENTS.md and media
+ARCHITECTURE.md  design document
+```
+
+## Team
+
+- [@nexurlabs](https://github.com/nexurlabs) / [@rishabhiskawai](https://github.com/rishabhiskawai)
+- [@Divyam-77](https://github.com/Divyam-77)
+- [@sbm-bit](https://github.com/sbm-bit)
+
+## Backend reference
+
+### API and execution
 
 - `POST /missions` accepts `{"repo":"stock","request":"<exact registered request>","mode":"multi"}`. Use `"baseline"` for the single-agent baseline. The response includes `mission_id`.
 - `GET /missions/:id` returns mission state, usage totals, pairing fields, and an event watermark.
