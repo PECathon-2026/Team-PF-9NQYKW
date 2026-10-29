@@ -792,6 +792,119 @@ test("review caps reset only for a new revision, without resetting the mission c
   expect(h.service.store.usage("manual").total.turns).toBe(7);
 });
 
+test("fix cycles extend the mission turn cap immediately and stop at the configured maximum", () => {
+  const h = manual();
+  h.service.budgetConfig = {
+    missionTurns: 2,
+    missionTurnExtension: 2,
+    missionTurnMax: 5,
+  };
+  h.service.reserve("manual", "turns", "shogun");
+  h.service.reserve("manual", "turns", "shogun");
+  expect(() => h.service.reserve("manual", "turns", "shogun")).toThrow(
+    "TURN_LIMIT",
+  );
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.mission_cap).toBe(4);
+  h.service.reserve("manual", "turns", "shogun");
+  h.service.reserve("manual", "turns", "shogun");
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.mission_cap).toBe(5);
+  h.service.reserve("manual", "turns", "samurai");
+  h.service.reserve("manual", "fixes");
+  expect(h.service.store.events("manual").at(-1)!.payload.mission_cap).toBe(5);
+  expect(() => h.service.reserve("manual", "turns", "samurai")).toThrow(
+    "TURN_LIMIT",
+  );
+  expect(() => h.service.reserve("manual", "fixes")).toThrow("FIX_LIMIT");
+  expect(h.service.store.usage("manual").total.turns).toBe(5);
+  expect(
+    turnBudgets("repair", {
+      missionTurns: 3,
+      missionTurnExtension: 0,
+      missionTurnMax: 3,
+    }).extension,
+  ).toBe(0);
+  expect(() =>
+    turnBudgets("repair", { missionTurns: 8, missionTurnMax: 7 }),
+  ).toThrow("INVALID_TURN_LIMIT");
+});
+
+test("review prompts distinguish untrusted note paths from replacement of the trusted store root", async () => {
+  const h = manual();
+  const fake = scripted([reply('{"findings":[]}')]);
+  await h.service.session(
+    "manual",
+    "shadow_security",
+    { phase: "review" },
+    fake.model,
+  );
+  const system = fake.inputs[0].messages[0].content;
+  expect(system).toContain(
+    "attacker replacing the configured root or its ancestors",
+  );
+  expect(system).toContain(
+    "Symlink escapes through paths inside the store are in scope",
+  );
+  expect(system).toContain("when the request forbids them");
+});
+
+test("final-turn tool restriction follows the extended mission cap", async () => {
+  const h = manual();
+  h.service.budgetConfig = {
+    missionTurns: 1,
+    missionTurnExtension: 2,
+    missionTurnMax: 3,
+  };
+  h.service.reserve("manual", "turns", "shogun");
+  h.service.reserve("manual", "fixes");
+  const editor = scripted([reply('{"done":true}')]);
+  await h.service.session("manual", "samurai", { phase: "edit" }, editor.model);
+  expect(
+    editor.inputs[0].tools.some(
+      (tool: any) => tool.function.name === "edit_file",
+    ),
+  ).toBe(true);
+  expect(editor.inputs[0].messages[0].content).toContain(
+    "mission-wide limit is 3",
+  );
+  const review = scripted([reply('{"findings":[]}')]);
+  await h.service.session(
+    "manual",
+    "shadow_review",
+    { phase: "review" },
+    review.model,
+  );
+  expect(review.inputs[0].tools.map((tool: any) => tool.function.name)).toEqual(
+    ["submit_result"],
+  );
+});
+
+test("turn extension and maximum are configurable through the environment", () => {
+  const oldExtension = process.env.DEVPILOT_TURN_EXTENSION_PER_FIX;
+  const oldMaximum = process.env.DEVPILOT_MAX_MISSION_TURNS;
+  try {
+    process.env.DEVPILOT_TURN_EXTENSION_PER_FIX = "7";
+    process.env.DEVPILOT_MAX_MISSION_TURNS = "60";
+    expect(turnBudgets("repair")).toMatchObject({
+      mission: 44,
+      extension: 7,
+      max: 60,
+    });
+    process.env.DEVPILOT_TURN_EXTENSION_PER_FIX = "-1";
+    expect(() => turnBudgets("repair")).toThrow("INVALID_TURN_LIMIT");
+    process.env.DEVPILOT_TURN_EXTENSION_PER_FIX = "7";
+    process.env.DEVPILOT_MAX_MISSION_TURNS = "43";
+    expect(() => turnBudgets("repair")).toThrow("INVALID_TURN_LIMIT");
+  } finally {
+    if (oldExtension === undefined)
+      delete process.env.DEVPILOT_TURN_EXTENSION_PER_FIX;
+    else process.env.DEVPILOT_TURN_EXTENSION_PER_FIX = oldExtension;
+    if (oldMaximum === undefined) delete process.env.DEVPILOT_MAX_MISSION_TURNS;
+    else process.env.DEVPILOT_MAX_MISSION_TURNS = oldMaximum;
+  }
+});
+
 test("every model role receives only its submit tool and a final-turn instruction on its last turn", async () => {
   for (const [role, phase] of [
     ["shogun", "plan"],

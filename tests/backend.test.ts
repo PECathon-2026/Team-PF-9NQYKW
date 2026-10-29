@@ -352,7 +352,7 @@ describe("backend", () => {
         "total",
       ]);
       expect(event.payload.budget.shadow_security).toBe(12);
-      expect(event.payload.mission_cap).toBe(44);
+      expect([44, 60]).toContain(event.payload.mission_cap);
       expect(event.payload.review_pass.code_rev).toBe(event.code_rev);
       for (const role of ["shadow_review", "shadow_security", "verifier"])
         expect(event.payload.pass_turns[role]).toBe(
@@ -379,6 +379,12 @@ describe("backend", () => {
         (e) =>
           e.payload.per_agent.shogun?.input_tokens === 5 &&
           e.payload.per_agent.shogun?.output_tokens === 2,
+      ),
+    ).toBe(true);
+    expect(
+      usageEvents.some(
+        (event) =>
+          event.agent === "orchestrator" && event.payload.mission_cap === 60,
       ),
     ).toBe(true);
     expect(

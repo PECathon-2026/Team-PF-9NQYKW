@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startServer } from "../src/server";
 import { loadRegistry } from "../src/registry";
+import { redact } from "../src/redaction";
 
 // One isolated mission; never print provider responses, credentials, or headers.
 async function main() {
@@ -61,19 +62,32 @@ async function main() {
         ),
       ],
       elapsed_ms: Date.now() - mission.created,
+      effective_cap:
+        events.findLast((event) => event.type === "usage")?.payload
+          .mission_cap ?? null,
       findings: {
-        blocking: events.filter(
-          (event) =>
-            event.type === "finding" &&
-            event.payload.action === "open" &&
-            event.payload.blocking,
-        ).length,
-        advisory: events.filter(
-          (event) =>
-            event.type === "finding" &&
-            event.payload.action === "open" &&
-            !event.payload.blocking,
-        ).length,
+        blocking: events
+          .filter(
+            (event) =>
+              event.type === "finding" &&
+              event.payload.action === "open" &&
+              event.payload.blocking,
+          )
+          .map((event) => ({
+            agent: event.agent,
+            title: redact(event.payload.title, "", 200),
+          })),
+        advisory: events
+          .filter(
+            (event) =>
+              event.type === "finding" &&
+              event.payload.action === "open" &&
+              !event.payload.blocking,
+          )
+          .map((event) => ({
+            agent: event.agent,
+            title: redact(event.payload.title, "", 200),
+          })),
         sent_back: events.filter(
           (event) =>
             event.type === "finding" && event.payload.action === "sent_back",
