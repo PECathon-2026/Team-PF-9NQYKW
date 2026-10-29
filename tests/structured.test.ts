@@ -709,7 +709,17 @@ test("editor blocks protected test files and emits an informational documentatio
   );
   expect(edited.ok).toBe(true);
   const events = h.service.store.events("manual"),
-    finding = events.find((e) => e.type === "finding")!;
+    finding = events.find(
+      (e) => e.type === "finding" && !e.payload.tamper,
+    )!;
+  expect(
+    events.find((e) => e.type === "finding" && e.payload.tamper)!.payload,
+  ).toMatchObject({
+    blocking: false,
+    severity: "info",
+    title: "Protected file edit blocked",
+    tamper: { tool: "edit_file", path: "tests/test_a.py", code: "PROTECTED_FILE" },
+  });
   expect(finding.payload).toMatchObject({
     severity: "info",
     blocking: false,

@@ -1456,7 +1456,7 @@ export class Service {
       this.store.db
         .query("INSERT OR IGNORE INTO failures VALUES(?,?,?)")
         .run(mid, callId, fingerprint);
-      this.store.event(
+      const resultEvent = this.store.event(
         mid,
         "tool_result",
         role,
@@ -1464,6 +1464,32 @@ export class Service {
         m.current_rev,
         true,
       );
+      if (
+        (code === "PROTECTED_FILE" || code === "INVALID_PATH") &&
+        typeof args?.path === "string"
+      )
+        // Flag test tampering and path escapes visibly, not only as a
+        // tool error; the attempt itself was already refused.
+        this.store.event(
+          mid,
+          "finding",
+          "orchestrator",
+          {
+            finding_id: id("f"),
+            severity: "info",
+            blocking: false,
+            action: "open",
+            title:
+              code === "PROTECTED_FILE"
+                ? "Protected file edit blocked"
+                : "Path escape blocked",
+            detail: `${role} ${name} on ${args.path.slice(0, 200)} was refused (${code}).`,
+            tamper: { tool: name, path: args.path.slice(0, 200), code },
+            evidence_event_ids: [resultEvent.id],
+          },
+          m.current_rev,
+          true,
+        );
       const count: any = this.store.db
         .query(
           "SELECT count(*) AS n FROM failures WHERE mission_id=? AND fingerprint=?",
