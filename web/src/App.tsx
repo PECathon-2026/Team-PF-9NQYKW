@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Activity, ArrowRight, Check, ChevronRight, CirclePlay, Columns2, Command, FileDiff, GitBranch, LayoutDashboard, ListChecks, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck, X } from "lucide-react";
 import { approve, createMission, fetchRequests, subscribe } from "./lib/api";
-import { col, derive, isOpen, short } from "./lib/derive";
+import { col, derive, isOpen } from "./lib/derive";
 import { assertValid, decisionEvents, stockScript, titlesScript } from "./lib/replay";
 import { LOCAL_CATALOG, REQUESTS, type RequestCatalog } from "./lib/requests";
-import { errorText, eventLabel } from "./lib/labels";
+import { MISSION_TABS, errorText, eventLabel, gateReason, plural, versionLabel, type MissionTab } from "./lib/labels";
+import { tabSummary } from "./lib/summaries";
 import { REPOS, type MissionEvent, type RepoId } from "./lib/types";
 import { Approval, DiffViewer, Escalation, Evidence, Header, Tampers, TaskBoard, Timeline, WhyApprove } from "./components/Panels";
 import { Comparison } from "./components/Comparison";
@@ -13,12 +14,8 @@ import { Background } from "./components/Background";
 import { RepoMissionForm, RepoSourceBanner } from "./components/RepoMission";
 
 type Mode = "live" | "replay";
-type Tab = "overview" | "evidence" | "diff" | "activity" | "approval";
-const TABS = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard }, { id: "evidence", label: "Evidence", icon: ListChecks },
-  { id: "diff", label: "Diff", icon: FileDiff }, { id: "activity", label: "Activity", icon: Activity },
-  { id: "approval", label: "Approval", icon: ShieldCheck },
-] as const;
+const TAB_ICONS = { overview: LayoutDashboard, evidence: ListChecks, diff: FileDiff, activity: Activity, approval: ShieldCheck };
+const TABS = MISSION_TABS.map((tab) => ({ ...tab, icon: TAB_ICONS[tab.id] }));
 
 export default function App() {
   const params = useMemo(() => new URLSearchParams(location.search), []);
@@ -36,7 +33,7 @@ export default function App() {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [route, setRoute] = useState(location.hash === "#/compare" ? "compare" : "mission");
-  const [tab, setTab] = useState<Tab>("overview"); const [filter, setFilter] = useState("all"); const [focus, setFocus] = useState<number | null>(null);
+  const [tab, setTab] = useState<MissionTab>("overview"); const [filter, setFilter] = useState("all"); const [focus, setFocus] = useState<number | null>(null);
   const [collapsed, setCollapsed] = useState(false); const [palette, setPalette] = useState(false); const [query, setQuery] = useState("");
   const timers = useRef<number[]>([]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t); }, []);
@@ -84,6 +81,19 @@ export default function App() {
     { group: "Actions", label: mode === "live" ? "Start demo replay" : "Exit demo replay", icon: CirclePlay, run: toggleReplay },
   ].filter((c) => `${c.group} ${c.label}`.toLowerCase().includes(query.toLowerCase()));
   const pending = !!v.pendingApproval && !v.approvalResult && !v.done;
+  const approvalBarRef = useRef<HTMLDivElement>(null);
+  const [approvalBarHeight, setApprovalBarHeight] = useState(120);
+  useLayoutEffect(() => {
+    const bar = approvalBarRef.current;
+    if (!pending || !bar) return;
+    const measure = () => setApprovalBarHeight(bar.getBoundingClientRect().height);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(bar);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [pending, route]);
+  const activeTab = MISSION_TABS.find((item) => item.id === tab)!;
   return <><Background /><div className={`shell ${collapsed ? "sidebar-collapsed" : ""}`}>
     <aside className="sidebar">
       <div className="brand-row"><button className="brand-mark" onClick={() => navigate("mission")} aria-label="DevPilot home">D</button><span className="brand-name">DevPilot</span><button className="icon-button collapse" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
@@ -98,17 +108,19 @@ export default function App() {
       <div className="utility-bar"><div className="breadcrumb">{route === "compare" ? <strong>Compare</strong> : <><span>{repo}</span><ChevronRight size={13} /><strong>{missionId ? "Mission" : "New mission"}</strong></>}</div><div className="utility-actions"><button className="new-mission-button" onClick={newMission}><Plus size={14} /> New mission</button><button className="search-shortcut" onClick={() => { setPalette(true); setQuery(""); }}><Search size={14} /><span>Commands</span><kbd>⌘K</kbd></button></div></div>
       {mode === "replay" && <div className="simbar"><CirclePlay size={14} /><span><strong>Demo replay (simulated)</strong> Events are scripted, not from a real run.</span></div>}
       {route === "compare" ? <div className="content compare-page view-enter"><div className="page-heading"><h1>Compare runs</h1><p>A recorded multi-agent mission beside its single-agent baseline.</p></div><Comparison disabled={mode === "replay"} /></div> : <>
-        {missionId && <div className="mission-top"><Header v={v} mode={mode} conn={conn} now={now} /></div>}
+        {missionId && <div className="mission-top"><Header v={v} mode={mode} conn={conn} now={now} missionId={missionId} repo={repo} /></div>}
         {!missionId ? <div className="content launch-page view-enter"><RepoMissionForm disabled={mode === "replay"} onLaunched={(id) => { setErr(""); setEvents([]); setFilter("all"); setTab("overview"); setMissionId(id); }} /><section className="card launch"><h2 className="launch-heading">Or try a demo repository</h2><label className="field-label" htmlFor="repo-select">Repository</label><select id="repo-select" value={repo} onChange={(e) => chooseRepo(e.target.value as RepoId)}>{REPOS.map((r) => <option key={r}>{r}</option>)}</select><label className="field-label" htmlFor="request-select">Registered request</label><select id="request-select" value={custom ? "" : request} disabled={mode === "replay"} onChange={(e) => setRequest(e.target.value)}>{custom && <option value="" disabled>Custom request</option>}{registered.map((r) => <option key={r} value={r} title={r}>{r.length > 90 ? `${r.slice(0, 89)}…` : r}</option>)}</select><label className="field-label" htmlFor="mission-request">Request</label><textarea id="mission-request" value={request} onChange={(e) => setRequest(e.target.value)} rows={4} readOnly={mode === "replay"} /><div className="launch-actions"><button className="primary" disabled={busy || !request.trim() || (mode === "replay" && repo !== "stock" && repo !== "titles")} onClick={start}>{mode === "replay" ? "Start replay" : "Launch mission"} <ArrowRight size={15} /></button></div>{mode === "replay" && repo !== "stock" && repo !== "titles" && <p className="muted small launch-note">Demo replay is available for stock and titles.</p>}{err && <p className="fail">{err}</p>}</section></div> : <>
           <Dojo v={v} now={now} selected={filter} onSelect={chooseAgent} />
-          <div className="tab-bar" role="tablist" aria-label="Mission sections">{TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "section-tab active" : "section-tab"} onClick={() => { setTab(t.id); setFocus(null); }}><t.icon size={15} />{t.label}{t.id === "activity" && <span className="tab-count">{v.events.length}</span>}</button>)}</div>
-          <div className={`content tab-content ${pending ? "has-approval" : ""}`}><RepoSourceBanner events={events} missionId={mode === "live" ? missionId : null} /><Escalation v={v} />{err && <p className="fail error-banner">{err}</p>}
-            <div className="tab-panel" key={tab} role="tabpanel">
-              {tab === "overview" && <><div className="overview-summary"><div><span>Tasks done</span><strong>{v.tasks.filter((t) => col(t.status) === "done").length} / {v.tasks.length}</strong></div><div><span>Checks passed</span><strong>{v.checks.filter((c) => c.outcome === "passed" && !c.stale).length} / {v.checks.length}</strong></div><div><span>Findings</span><strong>{v.findings.length} total · {v.findings.filter(isOpen).length} open</strong></div><div><span>Latest event</span><strong>{v.events.length ? eventLabel(v.events[v.events.length - 1].type) : "—"}</strong></div></div><Tampers v={v} onCite={cite} compact /><TaskBoard v={v} /></>}
-              {tab === "evidence" && <Evidence v={v} onCite={cite} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} focus={focus} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <><Approval v={v} onDecide={decide} busy={busy} error="" /><WhyApprove v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} /></> : <section className="card"><h3>Approval</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} onCite={cite} />}</>}
+          <div className="agent-action-hint">Select an agent to filter the full event log.</div>
+          <div className="tab-bar" role="tablist" aria-label="Mission sections">{TABS.map((t) => <button key={t.id} id={`tab-${t.id}`} role="tab" aria-controls={`panel-${t.id}`} aria-selected={tab === t.id} className={tab === t.id ? "section-tab active" : "section-tab"} onClick={() => { setTab(t.id); setFocus(null); }}><t.icon size={18} /><span className="tab-text"><strong>{t.label}{t.id === "activity" && <span className="tab-count">{v.events.length}</span>}</strong><small>{t.subtitle}</small></span></button>)}</div>
+          <div className={`content tab-content ${pending ? "has-approval" : ""}`} style={{ "--approval-bar-height": `${approvalBarHeight}px` } as CSSProperties}><RepoSourceBanner events={events} missionId={mode === "live" ? missionId : null} /><Escalation v={v} onCite={cite} />{err && <p className="fail error-banner">{err}</p>}
+            <div className="tab-panel" key={tab} id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} role="tabpanel">
+              <div className="tab-intro"><h2>{activeTab.label}</h2><p>{tabSummary(tab, v)}</p></div>
+              {tab === "overview" && <><div className="overview-summary"><div><span>Tasks done</span><strong>{v.tasks.filter((t) => col(t.status) === "done").length} of {v.tasks.length}</strong></div><div><span>Tests and checks passed</span><strong>{v.checks.filter((c) => c.outcome === "passed" && !c.stale).length} of {v.checks.length}</strong></div><div><span>Review findings</span><strong>{v.findings.length} total · {v.findings.filter(isOpen).length} open</strong></div><div><span>Latest event</span><strong>{v.events.length ? eventLabel(v.events[v.events.length - 1].type) : "—"}</strong></div></div><Tampers v={v} onCite={cite} compact /><TaskBoard v={v} /></>}
+              {tab === "evidence" && <Evidence v={v} onCite={cite} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} focus={focus} onCite={cite} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <><Approval v={v} onDecide={decide} busy={busy} error="" onCite={cite} /><WhyApprove v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} onCite={cite} /></> : <section className="card"><h3>Your decision</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} onCite={cite} />}</>}
             </div>
           </div>
-          {pending && <div className="approval-bar"><div className="approval-symbol"><ShieldCheck size={18} /></div><div className="approval-copy"><strong>{v.gate.ok ? "Ready for your approval" : "Approval requested"} <span title={v.pendingApproval?.code_rev ?? undefined}>{short(v.pendingApproval?.code_rev)}</span></strong>{!v.gate.ok && <small>{v.gate.reasons.join(" · ")}</small>}</div><button onClick={() => setTab("approval")}>Review</button><button disabled={busy} onClick={() => decide(false)}>Reject</button><button className="primary" disabled={!v.gate.ok || busy} title={!v.gate.ok ? v.gate.reasons.join(" · ") : ""} onClick={() => decide(true)}><Check size={15} /> Approve</button></div>}
+          {pending && <div className="approval-bar" ref={approvalBarRef}><div className="approval-symbol"><ShieldCheck size={18} /></div><div className="approval-copy"><strong>{v.gate.ok ? "Ready for your decision" : "Approval is blocked"}</strong><span>{versionLabel(v.pendingApproval?.code_rev)} · {v.gate.ok ? "Review the results before deciding." : `${plural(v.gate.reasons.length, "requirement")} to review.`}</span></div><button onClick={() => setTab("approval")}>Review decision</button><button disabled={busy} onClick={() => decide(false)}>Reject</button><button className="primary" disabled={!v.gate.ok || busy} title={!v.gate.ok ? v.gate.reasons.map((r) => gateReason(r, v.checks)).join("\n") : "Approve this change"} onClick={() => decide(true)}><Check size={15} /> Approve</button></div>}
         </>}
       </>}
     </main>

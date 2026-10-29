@@ -1,23 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import type { MissionEvent } from "../lib/types";
-import { agentTurns, approved, buildPatch, col, isOpen, isResolved, revisionDiffs, secondsLeft, short, str, tamperOf, tamperText, type Finding, type View } from "../lib/derive";
-import { CONNECTION, agentName, eventLabel, humanize, plural, stateLabel } from "../lib/labels";
+import { agentTurns, approved, buildPatch, col, isOpen, isResolved, revisionDiffs, secondsLeft, str, tamperOf, tamperText, type Finding, type View } from "../lib/derive";
+import { HELP, OUTDATED_LABEL, agentName, checkHelp, checkLabel, eventLabel, gateReason, humanize, plural, sourceHelp, sourceLabel, stateLabel, versionLabel } from "../lib/labels";
 
 // All dynamic text is rendered as React text nodes (never innerHTML).
 export const Prov = ({ e, stale, unisolated }: { e: { verified: boolean }; stale?: boolean; unisolated?: boolean }) => (
   <span className="prov">
-    {unisolated && <span className="tag uniso" title="Ran without sandbox isolation. Never counts toward approval.">unisolated</span>}
-    <span className={e.verified ? "tag ok" : "tag claim"} title={e.verified ? "Observed by the service or a trusted runner" : "Reported by a model, not observed"}>{e.verified ? "verified" : "claimed"}</span>
-    {stale && <span className="tag stale" title="Invalidated by a later revision">stale</span>}
+    {unisolated && <span className="tag uniso" title={HELP.unisolated}>No protected environment <Hint text={HELP.unisolated} /></span>}
+    <span className={e.verified ? "tag ok" : "tag claim"} title={sourceHelp(e.verified)}>{sourceLabel(e.verified)} <Hint text={sourceHelp(e.verified)} /></span>
+    {stale && <span className="tag stale" title={HELP.outdated}>{OUTDATED_LABEL} <Hint text={HELP.outdated} /></span>}
   </span>
 );
+export function Hint({ text }: { text: string }) {
+  return <span className="help-hint" tabIndex={0} title={text} aria-label={text}>?</span>;
+}
+export function Version({ revision }: { revision: string | null | undefined }) {
+  return <div className="version-label"><span title={revision ?? HELP.version}>{versionLabel(revision)}</span>{revision && <details className="hash-details"><summary title="Show the full code version hash so you can copy it">View hash</summary><code>{revision}</code></details>}</div>;
+}
+function Snapshot({ value }: { value: string }) {
+  return value ? <code className="snapshot-hash">{value}</code> : <span className="muted">Not recorded</span>;
+}
 export const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 const time = (ts: number) => new Date(ts).toLocaleTimeString([], { hour12: false });
-const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const clock = (s: number) => `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const COLUMNS: Record<string, string> = { pending: "Pending", ready: "Ready", running: "Running", blocked: "Blocked", done: "Done" };
 
-export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: string; now: number }) {
+export function Header({ v, mode, conn, now, missionId, repo }: { v: View; mode: string; conn: string; now: number; missionId: string; repo: string }) {
   const clockLeft = secondsLeft(v, v.done?.ts ?? now); const left = clockLeft?.left ?? null;
   const terminal = !!v.done || v.state === "ESCALATED" || v.state === "REJECTED";
   const endTs = v.done?.ts ?? v.events[v.events.length - 1]?.ts;
@@ -25,31 +34,31 @@ export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: st
   const took = terminal && v.started && endTs ? Math.max(0, Math.round((Number.isFinite(wall) && wall > 0 ? wall : endTs - v.started.ts) / 1000)) : null;
   return (
     <header className="mhead">
-      <div>
-        <div className="mission-meta"><span>{str(v.started?.payload.repo, "—")}</span><span className="mono">{v.started?.mission_id ?? ""}</span></div>
-        <div className="req">{str(v.started?.payload.request)}</div>
-      </div>
+      <div className="mission-meta"><div><span>Repository</span><strong>{str(v.started?.payload.repo, repo)}</strong></div><details className="mission-id"><summary>Mission ID</summary><code>{v.started?.mission_id ?? missionId}</code></details></div>
+      <div className="request-label">Request</div>
+      <blockquote className="req">{str(v.started?.payload.request, "Waiting for the mission request…")}</blockquote>
       <div className="hstats">
-        <span className={`state s-${v.state.toLowerCase()}`}>{stateLabel(v.state)}</span>
-        <span className="muted" title={v.currentRev ?? undefined}>Revision <code>{short(v.currentRev)}</code></span>
-        {took !== null ? <span className="muted" title="Total mission duration">Finished in {clock(took)}</span> : left !== null && <span className={left < 30 && !clockLeft?.paused ? "warn" : "muted"} title={clockLeft?.paused ? "The deadline is paused while approval is pending" : "Time left before the mission deadline, including any extensions"}>{clock(left)} left{clockLeft?.paused ? " · paused" : ""}</span>}
-        <span className="muted">Fix cycles {v.fixCycles}/3</span>
-        {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => { const used = agentTurns(v.usage, a) ?? u.turns; const cap = v.budget?.[a]; return `${agentName(a)}: ${used}${cap !== undefined && used <= cap ? `/${cap}` : ""} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tokens`; }).join("\n")}>{plural(v.usage.total.turns, "turn")} · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tokens</span>}
-        {v.unisolated.size > 0 && <span className="tag uniso" title="This runner has no sandbox isolation. Its results cannot satisfy the approval gate.">unisolated runner</span>}
-        <span className={`conn conn-${mode === "replay" ? "simulated" : conn}`}>{mode === "replay" ? "Simulated" : CONNECTION[conn] ?? humanize(conn)}</span>
+        <div className="hstat"><span>Status</span><strong className={`state s-${v.state.toLowerCase()}`}>{stateLabel(v.state)}</strong></div>
+        <div className="hstat"><span>{took !== null ? "Duration" : "Time left"}</span><strong className={left !== null && left < 30 && !clockLeft?.paused && took === null ? "warn" : ""} title={took !== null ? "Total mission duration" : clockLeft?.paused ? "The deadline is paused while approval is pending" : "Time left before the mission deadline, including any extensions"}>{took !== null ? clock(took) : left !== null ? `${clock(left)}${clockLeft?.paused ? " · paused" : ""}` : "Not reported"}</strong></div>
+        <div className="hstat"><span>Fix rounds used <Hint text={HELP.fixRounds} /></span><strong>{v.fixCycles} of 3</strong></div>
+        <div className="hstat"><span>Model turns <Hint text={HELP.turns} /></span><strong title={v.usage ? Object.entries(v.usage.per_agent).map(([a, u]) => { const used = agentTurns(v.usage, a) ?? u.turns; const cap = v.budget?.[a]; return `${agentName(a)}: ${used}${cap !== undefined && used <= cap ? `/${cap}` : ""} turns`; }).join("\n") : undefined}>{v.usage ? v.usage.total.turns : "Not reported"}</strong></div>
+        <div className="hstat"><span>Tokens <Hint text={HELP.tokens} /></span><strong title={v.usage ? `${v.usage.total.input_tokens.toLocaleString()} input + ${v.usage.total.output_tokens.toLocaleString()} output tokens` : undefined}>{v.usage ? fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens) : "Not reported"}</strong></div>
+        <div className="hstat"><span>Code version <Hint text={HELP.version} /></span><Version revision={v.currentRev} /></div>
       </div>
+      {v.unisolated.size > 0 && <div className="header-notice"><span className="tag uniso" title={HELP.unisolated}>Some results ran without a protected environment <Hint text={HELP.unisolated} /></span></div>}
+      {mode === "live" && (conn === "connecting" || conn === "reconnecting") && <div className="header-notice">{conn === "connecting" ? "Connecting to mission updates…" : "Reconnecting to mission updates…"}</div>}
     </header>
   );
 }
 
-export function Escalation({ v }: { v: View }) {
+export function Escalation({ v, onCite }: { v: View; onCite?: (id: number) => void }) {
   if (!v.escalations.length) return null;
   const e = v.escalations[v.escalations.length - 1];
   return (
     <div className="banner">
       <strong>Escalated to you.</strong> <span title={str(e.payload.reason)}>{humanize(str(e.payload.reason))}</span>
       {(e.payload.question || e.payload.action) ? <div className="q">{str(e.payload.question ?? e.payload.action)}</div> : null}
-      {(() => { const ids = Array.isArray(e.payload.relevant_event_ids) ? e.payload.relevant_event_ids : Array.isArray(e.payload.event_ids) ? e.payload.event_ids : []; return <div className="muted small">{[ids.length ? `Related events ${ids.map((i) => `#${i}`).join(" ")}` : "", e.payload.reason === "AMBIGUOUS_REQUEST" ? "Start a new mission with a clearer request." : ""].filter(Boolean).join(" · ")}</div>; })()}
+      {(() => { const raw = Array.isArray(e.payload.relevant_event_ids) ? e.payload.relevant_event_ids : Array.isArray(e.payload.event_ids) ? e.payload.event_ids : []; const ids = raw.filter((id): id is number => typeof id === "number"); return <div className="muted small">{ids.length > 0 && <>Related events <CiteLinks ids={ids} onCite={onCite} /></>}{ids.length > 0 && e.payload.reason === "AMBIGUOUS_REQUEST" && " · "}{e.payload.reason === "AMBIGUOUS_REQUEST" && "Start a new mission with a clearer request."}</div>; })()}
     </div>
   );
 }
@@ -58,8 +67,9 @@ export function TaskBoard({ v }: { v: View }) {
   const cols = ["pending", "ready", "running", "blocked", "done"];
   const crit = Array.isArray(v.plan?.payload.criteria) ? (v.plan!.payload.criteria as unknown[]) : [];
   return (
-    <section className="card scroll" key={v.plan?.id ?? 0}>
-      <h3>Plan {v.plan && <span className="h-meta">Version {str(v.plan.payload.version)}</span>} {v.plan && <Prov e={v.plan} />}</h3>
+    <section className="card" key={v.plan?.id ?? 0}>
+      <h3>Plan and tasks {v.plan && <span className="h-meta">Plan version {str(v.plan.payload.version)}</span>} {v.plan && <Prov e={v.plan} />}</h3>
+      <p className="section-description">The agents' plan and the current state of each task.</p>
       {crit.length > 0 && <ul className="crit">{crit.map((c, i) => <li key={i}>{typeof c === "object" && c ? `${str((c as Record<string, unknown>).id)}: ${str((c as Record<string, unknown>).description)}` : str(c)}</li>)}</ul>}
       {!v.plan && <p className="muted">No plan yet.</p>}
       <div className="board">
@@ -79,10 +89,10 @@ export function TaskBoard({ v }: { v: View }) {
 
 // Only show the unisolated tag where a runner actually executed something.
 const RUN_TYPES = new Set(["test_result", "tool_result"]);
-export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: string; setFilter: (filter: string) => void; focus?: number | null }) {
+export function Timeline({ v, filter, setFilter, focus, onCite }: { v: View; filter: string; setFilter: (filter: string) => void; focus?: number | null; onCite?: (id: number) => void }) {
   const [selectedId, setSelectedId] = useState<number | null>(focus ?? null);
   const focusRef = useRef<HTMLLIElement>(null);
-  useEffect(() => { focusRef.current?.scrollIntoView({ block: "center" }); }, []);
+  useEffect(() => { if (focus != null) { setSelectedId(focus); focusRef.current?.scrollIntoView({ block: "center" }); } }, [focus]);
   const agents = Array.from(new Set(["all", ...(filter !== "all" ? [filter] : []), ...v.events.map((e) => e.agent)]));
   const list = v.events.filter((e) => filter === "all" || e.agent === filter);
   const selected = list.find((e) => e.id === selectedId) ?? list[list.length - 1];
@@ -92,9 +102,9 @@ export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: str
   const lanes = Array.from(new Set(list.map((e) => e.agent)));
   return (
     <section className="card tl">
-      <h3>Activity
-        <select aria-label="Filter by agent" value={filter} onChange={(e) => setFilter(e.target.value)}>{agents.map((a) => <option key={a} value={a}>{a === "all" ? "All agents" : agentName(a)}</option>)}</select>
-      </h3>
+      <div className="section-heading-row"><div><h3>Full event log</h3><p className="section-description">Each event records an action or result. Read the log below, or select a dot to inspect an event on the timeline.</p></div>
+        <label className="filter-label">Filter by agent<select aria-label="Filter by agent" value={filter} onChange={(e) => setFilter(e.target.value)}>{agents.map((a) => <option key={a} value={a}>{a === "all" ? "All agents" : agentName(a)}</option>)}</select></label>
+      </div>
       <div className="trace-layout">
         <div className="trace" aria-label="Event trace">
           {list.length ? <>
@@ -104,6 +114,7 @@ export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: str
         </div>
         {selected && <aside className="trace-detail" aria-label="Selected event">
           <div className="trace-detail-heading"><strong title={selected.type}>{eventLabel(selected.type)}</strong><span className="mono muted">#{selected.id}</span></div><div className="trace-detail-meta">{agentName(selected.agent)} · <span className="num">{time(selected.ts)}</span> <Prov e={selected} stale={v.staleIds.has(selected.id)} unisolated={RUN_TYPES.has(selected.type) && v.unisolated.has(selected.id)} /></div><div className="esum">{summary(selected)}</div>
+          {eventCitations(selected).length > 0 && <div className="event-citations">Related events <CiteLinks ids={eventCitations(selected)} onCite={onCite} /></div>}
         </aside>}
       </div>
       <div className="log-label">Event log{filter !== "all" && <span>{list.length}</span>}</div>
@@ -112,9 +123,11 @@ export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: str
           <li key={e.id} ref={e.id === focus ? focusRef : undefined} className={`${v.staleIds.has(e.id) ? "is-stale" : ""}${e.id === focus ? " is-focus" : ""}`}>
             <span className="muted mono">#{e.id} {time(e.ts)}</span>
             <span className={`agent a-${e.agent}`} title={e.agent}>{agentName(e.agent)}</span>
-            <span className="etype" title={e.type}>{eventLabel(e.type)}</span>
+            <span className="etype" title={e.type === "tool_call" || e.type === "tool_result" ? HELP.tool : e.type}>{eventLabel(e.type)}{(e.type === "tool_call" || e.type === "tool_result") && <Hint text={HELP.tool} />}</span>
             <Prov e={e} stale={v.staleIds.has(e.id)} unisolated={RUN_TYPES.has(e.type) && v.unisolated.has(e.id)} />
             {summary(e) && <div className="esum">{summary(e)}</div>}
+            {eventCitations(e).length > 0 && <div className="event-citations">Related events <CiteLinks ids={eventCitations(e)} onCite={onCite} /></div>}
+            <details className="event-details"><summary>Show full event details</summary><pre>{JSON.stringify(e.payload, null, 2)}</pre></details>
           </li>
         ))}
       </ol>
@@ -123,32 +136,36 @@ export function Timeline({ v, filter, setFilter, focus }: { v: View; filter: str
 }
 export function summary(e: MissionEvent): string {
   const p = e.payload;
-  const cite = (k: string) => (Array.isArray(p[k]) && (p[k] as unknown[]).length ? `  ← ${(p[k] as unknown[]).map((x) => `#${x}`).join(" ")}` : "");
   switch (e.type) {
-    case "mission_started": return `${str(p.repo)} at base ${short(str(p.base_hash))}`;
-    case "plan": return `Version ${str(p.version)} · ${plural(Array.isArray(p.tasks) ? p.tasks.length : 0, "task")}${cite("reason_event_ids")}`;
-    case "task_update": return `${str(p.task_id)}: ${str(p.previous_status)} → ${str(p.new_status ?? p.status)}${cite("reason_event_ids")}`;
-    case "agent_msg": return `To ${agentName(str(p.to ?? p.recipient))}: ${str(p.message)}${Array.isArray(p.findings) ? ` · ${plural(p.findings.length, "finding")}` : ""}${typeof p.scanner_findings === "number" ? ` · ${plural(p.scanner_findings, "scanner finding")}` : ""}${cite("evidence_event_ids")}${cite("cited_event_ids")}`;
+    case "mission_started": return `Repository: ${str(p.repo)} · Original repository snapshot: ${str(p.base_hash)}`;
+    case "plan": return `Plan version ${str(p.version)} · ${plural(Array.isArray(p.tasks) ? p.tasks.length : 0, "task")}`;
+    case "task_update": return `${str(p.task_id)}: ${humanize(str(p.previous_status))} → ${humanize(str(p.new_status ?? p.status))}`;
+    case "agent_msg": return `To ${agentName(str(p.to ?? p.recipient))}: ${str(p.message)}${Array.isArray(p.findings) ? ` · ${plural(p.findings.length, "finding")}` : ""}${typeof p.scanner_findings === "number" ? ` · ${plural(p.scanner_findings, "scanner finding")}` : ""}`;
     case "turn_start": case "turn_end": return "";
     case "tool_call": return `${str(p.tool)}(${JSON.stringify(p.arguments ?? p.args ?? {})})`;
     case "tool_result": { if (p.ok === false) return `Error ${str((p.error as Record<string, unknown> | undefined)?.code ?? p.error, "unknown")}`; const d = p.data as Record<string, unknown> | undefined; const s = d ? (typeof d.content === "string" ? d.content : JSON.stringify(d)) : str(p.result, "ok"); return s; }
-    case "test_result": { const cr = Array.isArray(p.criteria) ? (p.criteria as { passed?: boolean }[]) : null; return `${p.phase === "baseline" ? "Baseline · " : ""}${str(p.suite_id ?? p.check_id)} ${str(p.outcome)}${p.exit_code !== undefined ? ` (exit ${str(p.exit_code)})` : ""}${cr ? ` · ${cr.filter((c) => c.passed).length}/${cr.length} criteria` : ""}${cite("cause_event_ids")}`; }
-    case "finding": { const t = tamperOf(e); if (t) return `Blocked: ${tamperText(t)} (${t.code})${cite("evidence_event_ids")}`; return `${str(p.finding_id)} ${isResolved(str(p.action)) ? "resolved" : humanize(str(p.action)).toLowerCase()} · ${str(p.severity)} · ${str(p.title ?? p.description ?? p.resolution)}${p.carried_forward === true ? " · carried forward" : ""}${p.unaccepted_resolution ? " · resolution not accepted" : ""}${cite("evidence_event_ids")}`; }
-    case "diff": return `${short(str(p.revision))}: ${Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : ""}`;
-    case "approval_needed": case "approval_requested": return `Revision ${short(e.code_rev)}${cite("evidence_ids")}`;
+    case "test_result": { const cr = Array.isArray(p.criteria) ? (p.criteria as { passed?: boolean }[]) : null; return `${p.phase === "baseline" ? "Before changes · " : ""}${checkLabel(str(p.suite_id ?? p.check_id, "check"), p.suite_id ? "acceptance" : "check")}: ${humanize(str(p.outcome))}${p.exit_code !== undefined ? ` (exit code ${str(p.exit_code)})` : ""}${cr ? ` · ${cr.filter((c) => c.passed).length} of ${cr.length} criteria passed` : ""}`; }
+    case "finding": { const t = tamperOf(e); if (t) return `Blocked: ${tamperText(t)} (${t.code})`; return `${str(p.finding_id)} ${isResolved(str(p.action)) ? "resolved" : humanize(str(p.action)).toLowerCase()} · ${str(p.severity)} · ${[str(p.title), str(p.detail ?? p.description)].filter(Boolean).join(" — ") || str(p.resolution)}${p.carried_forward === true ? " · carried forward" : ""}${p.unaccepted_resolution ? ` · resolution not accepted: ${str(p.unaccepted_resolution)}` : ""}`; }
+    case "diff": return `${versionLabel(e.code_rev ?? str(p.revision))}: ${Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : ""}`;
+    case "approval_needed": case "approval_requested": return versionLabel(e.code_rev);
     case "approval_result": return approved(e) ? "Approved" : "Rejected";
-    case "escalation": return `${humanize(str(p.reason))}: ${str(p.question)}${cite("relevant_event_ids")}`;
-    case "stale": { const inv = p.affected_evidence_ids ?? p.invalidated; return `${short(str(p.old_revision))} → ${short(str(p.new_revision))}: ${str(p.reason)} · invalidated ${Array.isArray(inv) ? inv.map((x) => `#${x}`).join(" ") : ""}`; }
+    case "escalation": return `${humanize(str(p.reason))}: ${str(p.question)}`;
+    case "stale": return `${versionLabel(str(p.old_revision))} → ${versionLabel(str(p.new_revision))}: ${str(p.reason)} · earlier evidence became outdated`;
     case "mission_done": return stateLabel(str(p.status));
     case "usage": { const t = p.total as { turns: number; input_tokens: number; output_tokens: number }; return `${plural(t.turns, "turn")} · ${fmtTok(t.input_tokens)} in / ${fmtTok(t.output_tokens)} out tokens`; }
   }
+}
+
+function eventCitations(e: MissionEvent): number[] {
+  const keys = ["evidence_ids", "evidence_event_ids", "cited_event_ids", "reason_event_ids", "cause_event_ids", "relevant_event_ids", "invalidated", "affected_evidence_ids"];
+  return [...new Set(keys.flatMap((key) => Array.isArray(e.payload[key]) ? (e.payload[key] as unknown[]).filter((id): id is number => typeof id === "number") : []))];
 }
 
 /** Event-id links; `onCite` opens the event in the activity log. */
 export function CiteLinks({ ids, onCite }: { ids: number[]; onCite?: (id: number) => void }) {
   if (!ids.length) return null;
   return <span className="cites">{ids.map((id) => onCite
-    ? <button type="button" key={id} className="cite-link mono" onClick={() => onCite(id)} title={`Show event #${id} in Activity`}>#{id}</button>
+    ? <button type="button" key={id} className="cite-link mono" onClick={() => onCite(id)} title="Show this event in the Full event log">#{id}</button>
     : <span key={id} className="mono muted">#{id}</span>)}</span>;
 }
 
@@ -177,39 +194,43 @@ export function Tampers({ v, onCite, compact }: { v: View; onCite?: (id: number)
 export function Evidence({ v, onCite }: { v: View; onCite?: (id: number) => void }) {
   return (
     <section className="card">
-      <h3>Evidence</h3>
-      <table className="tbl">
-        <thead><tr><th>Check</th><th>Outcome</th><th>Attempts</th><th>Revision</th><th>Source</th></tr></thead>
-        <tbody>
-          {v.checks.length === 0 && <tr><td colSpan={5} className="muted">No checks have run yet.</td></tr>}
-          {v.checks.map((c) => (
-            <tr key={c.key} className={c.stale ? "is-stale" : ""}>
-              <td><span className="mono">{c.key}</span><div className="muted small">{c.kind === "acceptance" ? "Acceptance suite" : "Project check"}</div></td>
-              <td key={c.event.id} className={c.outcome === "passed" ? "pass cut" : "fail"}>{cap(c.outcome)}{c.exit !== undefined ? ` · exit ${c.exit}` : ""}{Array.isArray(c.event.payload.criteria) ? <div className="muted small">{(c.event.payload.criteria as { passed?: boolean }[]).filter((x) => x.passed).length}/{(c.event.payload.criteria as unknown[]).length} criteria</div> : null}{c.duration !== undefined ? <div className="muted small">{c.duration} ms</div> : null}</td>
-              <td>{c.attempts}</td>
-              <td><code title={c.code_rev ?? undefined}>{short(c.code_rev)}</code> <span className="muted small mono">#{c.event.id}</span></td>
-              <td><Prov e={c.event} stale={c.stale} unisolated={v.unisolated.has(c.event.id)} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <h3>Test results</h3>
+      <p className="section-description">The latest recorded result for each test or check, including which code version it ran against.</p>
+      {v.checks.length === 0 && <p className="muted">No tests or checks have run yet.</p>}
+      <div className="result-list">{v.checks.map((c) => (
+        <article key={c.key} className={`result-card ${c.stale ? "is-stale" : ""}`}>
+          <div className="result-heading"><div><h4>{checkLabel(c.key, c.kind)} <Hint text={checkHelp(c.key, c.kind)} /></h4><p>{checkHelp(c.key, c.kind)}</p></div><strong className={`result-outcome ${c.outcome === "passed" ? "pass" : "fail"}`}>{cap(c.outcome)}</strong></div>
+          <div className="result-meta">
+            <div><span>Runs <Hint text={HELP.runs} /></span><strong>{c.attempts}</strong></div>
+            <div><span>Code version <Hint text={HELP.version} /></span><Version revision={c.code_rev} /></div>
+            <div><span>Source</span><Prov e={c.event} stale={c.stale} unisolated={v.unisolated.has(c.event.id)} /></div>
+            <div><span>Recorded event</span><CiteLinks ids={[c.event.id]} onCite={onCite} /></div>
+          </div>
+          {(c.exit !== undefined || Array.isArray(c.event.payload.criteria) || c.duration !== undefined) && <p className="result-extra">
+            {c.exit !== undefined && <span>Exit code {c.exit} <Hint text={HELP.exitCode} /></span>}
+            {Array.isArray(c.event.payload.criteria) && <span>{(c.event.payload.criteria as { passed?: boolean }[]).filter((x) => x.passed).length} of {(c.event.payload.criteria as unknown[]).length} criteria passed</span>}
+            {c.duration !== undefined && <span>Duration: {c.duration} ms <Hint text={HELP.milliseconds} /></span>}
+          </p>}
+          <details className="raw-id"><summary>Show test ID</summary><code>{c.key}</code></details>
+        </article>
+      ))}</div>
       <Tampers v={v} onCite={onCite} />
-      <h4>Findings</h4>
-      {v.findings.length === 0 && <p className="muted">No findings. A clean review is a model conclusion, not proof.</p>}
+      <h3 className="subsection-title">Review findings <Hint text={HELP.findings} /></h3>
+      <p className="section-description">Issues reported by the reviewers, their status, and the events they refer to.</p>
+      {v.findings.length === 0 && <p className="muted">No findings have been reported. Review conclusions are agent-reported.</p>}
       {v.findings.map((f) => (
         <div key={f.id} className={`finding ${f.stale ? "is-stale" : ""}`}>
-          <span className={`sev sev-${f.severity}`}>{f.severity}</span>
-          <strong className="mono">{f.id}</strong> <span className="muted">{agentName(f.agent)}{f.blocking ? " · Blocking" : ""}</span>
-          <span key={f.action} className={isResolved(f.action) ? "pass cut" : "warn"}> · {isResolved(f.action) ? "Resolved" : "Open"}</span>
-          {f.sentBack && <span className="tag back">sent back to Samurai</span>}
-          {f.carriedForward && <span className="tag back" title="The reviewer omitted this blocking critical from its later report; it stays open until resolved with evidence">carried forward</span>}
-          {f.unacceptedResolution && <span className="tag back" title={f.unacceptedResolution}>resolution not accepted</span>}
+          <div className="finding-heading"><strong>{isResolved(f.action) ? "Resolved" : "Open"} finding</strong><span className={`sev sev-${f.severity}`}>{humanize(f.severity)} severity</span>{f.blocking && <span className="tag back">{isResolved(f.action) ? "Previously blocking" : "Blocks approval"}</span>}</div>
+          <div className="muted small">Reported by {agentName(f.agent)} · Finding <code>{f.id}</code> · Event <CiteLinks ids={[f.eventId]} onCite={onCite} /></div>
           <Prov e={f} stale={f.stale} unisolated={v.unisolated.has(f.eventId)} />
-          <div>{f.description}</div>
+          {f.sentBack && <span className="tag back">Sent back to Samurai</span>}
+          {f.carriedForward && <span className="tag back" title="The reviewer omitted this blocking critical from its later report; it stays open until resolved with evidence">Kept open from an earlier review <Hint text="The reviewer omitted this blocking critical from its later report; it stays open until resolved with evidence." /></span>}
+          {f.unacceptedResolution && <span className="tag back" title={f.unacceptedResolution}>Resolution not accepted</span>}
+          <div className="finding-text">{f.description}</div>
           {f.unacceptedResolution && <div className="fail small">Resolution not accepted: {f.unacceptedResolution}{f.blocking ? " Still blocking." : ""}</div>}
           {f.resolutionEvidence && <div className="muted small">Resolution evidence: <code>{f.resolutionEvidence.path}{f.resolutionEvidence.line !== undefined ? `:${f.resolutionEvidence.line}` : ""}</code></div>}
           {f.resolution && <div className="muted small">Resolution: {f.resolution}</div>}
-          {f.evidenceIds.length > 0 && <div className="muted small">Cited events <CiteLinks ids={f.evidenceIds} onCite={onCite} /></div>}
+          {f.evidenceIds.length > 0 && <div className="muted small">Related events <CiteLinks ids={f.evidenceIds} onCite={onCite} /></div>}
         </div>
       ))}
     </section>
@@ -228,13 +249,13 @@ export function DiffViewer({ v, fetchArtifact }: { v: View; fetchArtifact?: (id:
   }, [d, fetchArtifact]);
   return (
     <section className="card">
-      <h3>Diff
-        {v.diffs.length > 1 && <select aria-label="Revision" value={idx < 0 ? v.diffs.length - 1 : idx} onChange={(e) => setIdx(Number(e.target.value))}>
-          {v.diffs.map((x, i) => <option key={x.id} value={i}>{short(x.code_rev)}{i === v.diffs.length - 1 ? " (latest)" : ""}</option>)}</select>}
-      </h3>
-      {!d ? <p className="muted">No revision yet.</p> : (
+      <div className="section-heading-row"><div><h3>Code changes</h3><p className="section-description">Lines added and removed since the original repository snapshot.</p></div>
+        {v.diffs.length > 1 && <label className="filter-label">Choose a version<select aria-label="Choose a code version" value={idx < 0 ? v.diffs.length - 1 : idx} onChange={(e) => setIdx(Number(e.target.value))}>
+          {v.diffs.map((x, i) => <option key={x.id} value={i}>{versionLabel(x.code_rev ?? str(x.payload.revision))}{i === v.diffs.length - 1 ? " (latest)" : ""}</option>)}</select></label>}
+      </div>
+      {!d ? <p className="muted">No code changes recorded yet.</p> : (
         <>
-          <div className="muted small">Base <code>{short(str(d.payload.base_hash))}</code> → <code>{short(d.code_rev)}</code> · {(d.payload.changed_paths as string[] | undefined)?.join(", ")}</div>
+          <div className="diff-meta"><div><span>Code version <Hint text={HELP.version} /></span><Version revision={d.code_rev ?? str(d.payload.revision)} /></div><div><span>Original repository snapshot <Hint text={HELP.originalSnapshot} /></span><Snapshot value={str(d.payload.base_hash)} /></div>{Array.isArray(d.payload.changed_paths) && <div><span>Changed files</span><code>{d.payload.changed_paths.map((path) => str(path)).join(", ")}</code></div>}</div>
           <pre className="diff">{text.split("\n").map((l, i) => <div key={i} className={l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : l.startsWith("@@") ? "hunk" : ""}>{l || " "}</div>)}</pre>
         </>
       )}
@@ -242,25 +263,26 @@ export function DiffViewer({ v, fetchArtifact }: { v: View; fetchArtifact?: (id:
   );
 }
 
-export function Approval({ v, onDecide, busy, error }: { v: View; onDecide: (a: boolean) => void; busy: boolean; error: string }) {
+export function Approval({ v, onDecide, busy, error, onCite }: { v: View; onDecide: (a: boolean) => void; busy: boolean; error: string; onCite?: (id: number) => void }) {
   const a = v.pendingApproval;
   if (!a && !v.approvalResult) return null;
   return (
     <section className={`card approval ${approved(v.approvalResult) ? "sealed" : ""}`}>
-      <h3>Approval</h3>
+      <h3>Your decision</h3>
+      <p className="section-description">Review the code version and its supporting evidence before you approve or reject it.</p>
       {a && <div className="kv">
-        <span>Revision</span><code>{a.code_rev ?? str(a.payload.revision)}</code>
-        <span>Tree</span><code>{str(a.payload.tree_hash)}</code>
-        <span>Base</span><code>{str(a.payload.base_hash ?? v.started?.payload.base_hash)}</code>
-        <span>Evidence</span><span>{v.citations.map((c, i) => <span key={c.id} className={c.event ? undefined : "fail"}>{i ? " " : ""}#{c.id}{!c.event ? " (missing)" : c.stale ? " (stale)" : ""}</span>)}</span>
+        <span>Code version <Hint text={HELP.version} /></span><Version revision={a.code_rev ?? str(a.payload.revision)} />
+        <span>Snapshot of the changed files <Hint text={HELP.changedSnapshot} /></span><Snapshot value={str(a.payload.tree_hash)} />
+        <span>Original repository snapshot <Hint text={HELP.originalSnapshot} /></span><Snapshot value={str(a.payload.base_hash ?? v.started?.payload.base_hash)} />
+        <span>Supporting events</span><span className="citation-list">{v.citations.length ? v.citations.map((c) => <span key={c.id} className={c.event ? undefined : "fail"}>{c.event ? <CiteLinks ids={[c.id]} onCite={onCite} /> : `#${c.id} (missing)`}{c.stale && c.event ? ` (${OUTDATED_LABEL})` : ""}</span>) : "None"}</span>
         <span>Open findings</span><span>{v.findings.filter(isOpen).length}{v.tampers.length ? <span className="muted small"> · {plural(v.tampers.length, "tamper attempt")} blocked (not counted)</span> : null}</span>
       </div>}
       {v.approvalResult ? <p className="decision">Decision recorded: <strong>{approved(v.approvalResult) ? "Approved" : "Rejected"}</strong></p> : (
         <>
-          {!v.gate.ok && <ul className="reasons">{v.gate.reasons.map((r) => <li key={r}>{r}</li>)}</ul>}
+          {!v.gate.ok && <><p className="fail"><strong>Approval is blocked for these reasons:</strong></p><ul className="reasons">{v.gate.reasons.map((r) => <li key={r}>{gateReason(r, v.checks)}</li>)}</ul></>}
           <div className="btns">
-            <button className="primary" disabled={!v.gate.ok || busy} onClick={() => onDecide(true)}>Approve <code>{short(a?.code_rev)}</code></button>
-            <button disabled={busy || !!v.done} onClick={() => onDecide(false)}>Reject</button>
+            <button className="primary" disabled={!v.gate.ok || busy} onClick={() => onDecide(true)}>Approve change</button>
+            <button disabled={busy || !!v.done} onClick={() => onDecide(false)}>Reject change</button>
           </div>
         </>
       )}
@@ -273,15 +295,15 @@ export function Approval({ v, onDecide, busy, error }: { v: View; onDecide: (a: 
 function cited(e: MissionEvent): { name: string; outcome: string; ok?: boolean } {
   const p = e.payload;
   switch (e.type) {
-    case "test_result": return { name: str(p.suite_id ?? p.check_id, "check"), outcome: cap(str(p.outcome, "unknown")), ok: p.outcome === "passed" };
+    case "test_result": return { name: checkLabel(str(p.suite_id ?? p.check_id, "check"), p.suite_id ? "acceptance" : "check"), outcome: cap(str(p.outcome, "unknown")), ok: p.outcome === "passed" };
     case "finding": { const t = tamperOf(e); if (t) return { name: `Blocked: ${tamperText(t)}`, outcome: `Refused · ${t.code}`, ok: true }; return { name: str(p.finding_id, `#${e.id}`), outcome: `${humanize(str(p.action, "open"))} · ${str(p.severity, "info")}`, ok: isResolved(str(p.action)) || p.blocking === false }; }
-    case "diff": return { name: Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : "Revision", outcome: "Revision recorded" };
+    case "diff": return { name: Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : "Code changes", outcome: "Code version recorded" };
     case "tool_result": return { name: str(p.call_id, "tool"), outcome: p.ok === false ? "Error" : "OK", ok: p.ok !== false };
     default: return { name: eventLabel(e.type), outcome: "—" };
   }
 }
 
-export function WhyApprove({ v, fetchArtifact }: { v: View; fetchArtifact?: (id: string) => Promise<string> }) {
+export function WhyApprove({ v, fetchArtifact, onCite }: { v: View; fetchArtifact?: (id: string) => Promise<string>; onCite?: (id: number) => void }) {
   const [downloadError, setDownloadError] = useState("");
   const a = v.pendingApproval ?? v.approvalResult;
   if (!a) return null;
@@ -303,7 +325,7 @@ export function WhyApprove({ v, fetchArtifact }: { v: View; fetchArtifact?: (id:
   const done = v.done; const appliedRev = str(done?.payload.applied_revision);
   const appliedPath = str(done?.payload.applied_path ?? done?.payload.applied_to ?? v.approvalResult?.payload.applied_path);
   const landed = appliedRev || appliedPath
-    ? <span className="pass">Applied {appliedRev && <code title={appliedRev}>{short(appliedRev)}</code>} to <code>{appliedPath || `runtime/missions/${missionId}/target/current`}</code>{done?.payload.recovered === true ? " (recovered after restart)" : ""}</span>
+    ? <div className="pass">Applied {appliedRev && <Version revision={appliedRev} />} to <code>{appliedPath || `runtime/missions/${missionId}/target/current`}</code>{done?.payload.recovered === true ? " (recovered after restart)" : ""}</div>
     : v.approvalResult && !approved(v.approvalResult) ? <span className="muted">Not applied: rejected</span>
     : done ? <span className="warn">Not applied: mission {str(done.payload.status, "finished").toLowerCase()}{v.escalations.length ? ` (${humanize(str(v.escalations[v.escalations.length - 1].payload.reason))})` : ""}</span>
     : v.approvalResult ? <span className="muted">Approved; applying</span>
@@ -327,39 +349,35 @@ export function WhyApprove({ v, fetchArtifact }: { v: View; fetchArtifact?: (id:
 
   return (
     <section className="card why">
-      <h3>Why approve {v.pendingApproval && !v.approvalResult && <span className={v.gate.ok ? "tag ok" : "tag stale"}>{v.gate.ok ? "gate passes" : "gate blocked"}</span>}
-        <button className="why-download" disabled={!latest} onClick={download} title={latest ? "Unified diff from the original base to this revision" : "No diff recorded for this revision"}>Download patch</button></h3>
+      <div className="section-heading-row"><div><h3>Evidence for this decision {v.pendingApproval && !v.approvalResult && <span className={v.gate.ok ? "tag ok" : "tag stale"}>{v.gate.ok ? "Requirements met" : "Approval blocked"}</span>}</h3>
+        <p className="section-description">Inspect the recorded results and the code snapshots behind this decision.</p></div>
+        <button className="why-download" disabled={!latest} onClick={download} title={latest ? HELP.patch : "No code changes recorded for this version"}>Download code changes</button></div>
       <div className="kv">
-        <span>Revision</span><code>{rev ?? "—"}</code>
-        <span>Tree hash</span><code>{tree || "—"}</code>
-        <span>Base hash</span><code>{base || "—"}</code>
-        <span>Isolation</span><span><span className={isolation === "isolated" ? "tag ok why-badge" : "tag uniso why-badge"} title={isolation === "unisolated" ? "A run lacked sandbox isolation. It cannot satisfy the gate." : isolation === "isolated" ? "Every check at this revision ran in the isolated runner" : "No isolation stamp on the checks for this revision"}>{isolation}</span></span>
-        <span>Landed</span>{landed}
+        <span>Code version <Hint text={HELP.version} /></span><Version revision={rev} />
+        <span>Snapshot of the changed files <Hint text={HELP.changedSnapshot} /></span><Snapshot value={tree} />
+        <span>Original repository snapshot <Hint text={HELP.originalSnapshot} /></span><Snapshot value={base} />
+        <span>Test environment <Hint text={HELP.isolation} /></span><span><span className={isolation === "isolated" ? "tag ok why-badge" : "tag uniso why-badge"} title={isolation === "unisolated" ? HELP.unisolated : isolation === "isolated" ? "Every check at this version ran in a protected environment" : "No environment information was recorded for these checks"}>{isolation === "isolated" ? "Protected" : isolation === "unisolated" ? "Not protected" : "Not recorded"}</span></span>
+        <span>Applied change</span>{landed}
       </div>
-      <h4>Cited evidence</h4>
-      {missing.length > 0 && <p className="fail small">Missing evidence {missing.map((c) => `#${c.id}`).join(", ")}: not in this mission's event stream. The gate does not pass.</p>}
-      <table className="tbl">
-        <thead><tr><th>Event</th><th>Type</th><th>Subject</th><th>Result</th><th>Revision</th><th>Source</th></tr></thead>
-        <tbody>
-          {v.citations.length === 0 && <tr><td colSpan={6} className="fail">The approval cites no evidence.</td></tr>}
-          {v.citations.map((c) => {
-            if (!c.event) return <tr key={c.id} className="why-missing"><td className="mono fail">#{c.id}</td><td colSpan={5} className="fail">Missing: no such event in this mission</td></tr>;
-            const d = cited(c.event);
-            return <tr key={c.id} className={c.stale ? "is-stale" : ""}>
-              <td className="mono">#{c.id}</td><td>{eventLabel(c.event.type)}</td><td className="mono">{d.name}</td>
-              <td className={d.ok === undefined ? "" : d.ok ? "pass" : "fail"}>{d.outcome}</td>
-              <td><code title={c.event.code_rev ?? undefined}>{short(c.event.code_rev)}</code></td>
-              <td><Prov e={c.event} stale={c.stale} unisolated={RUN_TYPES.has(c.event.type) && v.unisolated.has(c.event.id)} /></td>
-            </tr>;
-          })}
-        </tbody>
-      </table>
-      <h4>Checks and acceptance criteria at this revision</h4>
-      {checks.length === 0 ? <p className="muted">No checks have run on this revision.</p> : <ul className="why-checks">
+      <h4>Supporting events</h4>
+      <p className="section-description">Select an event number to see it in the full event log.</p>
+      {missing.length > 0 && <p className="fail small">Missing evidence {missing.map((c) => `#${c.id}`).join(", ")}: no matching events were recorded for this mission. Approval is blocked.</p>}
+      {v.citations.length === 0 && <p className="fail">The approval request does not refer to any evidence.</p>}
+      <div className="cited-list">{v.citations.map((c) => {
+        if (!c.event) return <div key={c.id} className="cited-row fail">#{c.id} · Missing: no such event in this mission</div>;
+        const d = cited(c.event);
+        return <div key={c.id} className={`cited-row ${c.stale ? "is-stale" : ""}`}>
+          <div><CiteLinks ids={[c.id]} onCite={onCite} /> <strong>{eventLabel(c.event.type)}</strong> · <span>{d.name}</span></div>
+          <div><span className={d.ok === undefined ? "" : d.ok ? "pass" : "fail"}>{d.outcome}</span> · <Version revision={c.event.code_rev} /> <Prov e={c.event} stale={c.stale} unisolated={RUN_TYPES.has(c.event.type) && v.unisolated.has(c.event.id)} /></div>
+        </div>;
+      })}</div>
+      <h4>Tests and criteria for this version</h4>
+      <p className="section-description">The latest results recorded for this code version.</p>
+      {checks.length === 0 ? <p className="muted">No tests or checks have run on this version.</p> : <ul className="why-checks">
         {checks.map((c) => {
           const criteria = Array.isArray(c.event.payload.criteria) ? c.event.payload.criteria as { id?: unknown; passed?: unknown }[] : [];
           return <li key={c.key}>
-            <span className={c.outcome === "passed" && !c.stale ? "pass" : "fail"}>{c.outcome === "passed" ? "✓" : "✗"}</span> <span className="mono">{c.key}</span> <span className="muted small">{c.kind === "acceptance" ? "Acceptance suite" : "Project check"} · {cap(c.outcome)} · #{c.event.id}</span>
+            <span className={c.outcome === "passed" && !c.stale ? "pass" : "fail"}>{c.outcome === "passed" ? "✓" : "✗"}</span> <strong>{checkLabel(c.key, c.kind)}</strong> <Hint text={checkHelp(c.key, c.kind)} /> <span className="muted small">· {cap(c.outcome)} · Event <CiteLinks ids={[c.event.id]} onCite={onCite} /></span> <Prov e={c.event} stale={c.stale} unisolated={v.unisolated.has(c.event.id)} />
             {criteria.length > 0 && <ul>{criteria.map((x, i) => <li key={i}><span className={x.passed === true ? "pass" : "fail"}>{x.passed === true ? "✓" : "✗"}</span> <span className="mono">{str(x.id, `criterion ${i + 1}`)}</span>{descriptions.get(str(x.id)) ? <span className="muted"> {descriptions.get(str(x.id))}</span> : null}</li>)}</ul>}
           </li>;
         })}

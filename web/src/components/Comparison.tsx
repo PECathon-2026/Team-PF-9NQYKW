@@ -2,7 +2,7 @@ import { useState } from "react";
 import { fetchEventsOnce } from "../lib/api";
 import { derive, str, type View } from "../lib/derive";
 import { fmtTok } from "./Panels";
-import { stateLabel } from "../lib/labels";
+import { checkLabel, stateLabel } from "../lib/labels";
 
 // Compares two REAL recorded missions loaded from the server. No placeholder numbers.
 export function Comparison({ disabled }: { disabled: boolean }) {
@@ -29,17 +29,17 @@ export function Comparison({ disabled }: { disabled: boolean }) {
     return [
       ["Outcome", v.done ? stateLabel(str(v.done.payload.status)) : "Not finished"],
       ["Reached approval", v.pendingApproval ? "Yes" : "No"],
-      ["Project checks", v.checks.filter((c) => c.kind === "check" && c.event.verified).map((c) => `${c.key}: ${c.outcome}`).join(", ") || "None"],
-      ["Acceptance suite", v.checks.filter((c) => c.kind === "acceptance" && c.event.verified).map((c) => `${c.key}: ${c.outcome}`).join(", ") || "None"],
+      ["Visible tests and checks", v.checks.filter((c) => c.kind === "check" && c.event.verified).map((c) => `${checkLabel(c.key, c.kind)}: ${c.outcome} (ID: ${c.key})`).join(", ") || "None"],
+      ["Hidden acceptance tests", v.checks.filter((c) => c.kind === "acceptance" && c.event.verified).map((c) => `${checkLabel(c.key, c.kind)}: ${c.outcome} (ID: ${c.key})`).join(", ") || "None"],
       ["Open findings", String(v.findings.filter((f) => f.action !== "resolve" && f.action !== "resolved").length)],
       ["Tamper attempts blocked", String(v.tampers.length)],
-      ["Fix cycles", String(v.fixCycles)],
+      ["Fix rounds used", String(v.fixCycles)],
       ["Tool failures", String(v.toolFailures)],
       ["Model turns", v.usage ? String(v.usage.total.turns) : "Not reported"],
       ["Tokens in / out", v.usage ? `${fmtTok(v.usage.total.input_tokens)} / ${fmtTok(v.usage.total.output_tokens)}` : "Not reported"],
-      ["Unisolated results", String(v.unisolated.size)],
+      ["Results without a protected environment", String(v.unisolated.size)],
       ["Elapsed", t0 && t1 ? `${((t1 - t0) / 1000).toFixed(1)}s` : "—"],
-      ["Base", str(v.started?.payload.base_hash, "—")],
+      ["Original repository snapshot", str(v.started?.payload.base_hash, "—")],
     ];
   };
   return (
@@ -55,11 +55,11 @@ export function Comparison({ disabled }: { disabled: boolean }) {
           {rows && (
             <table className="tbl">
               <thead><tr><th></th><th>Multi-agent</th><th>Baseline</th></tr></thead>
-              <tbody>{metric(rows.multi).map(([k, a], i) => <tr key={k} className={k === "Base" ? "mono-row" : ""}><td>{k}</td><td>{a}</td><td>{metric(rows.base)[i][1]}</td></tr>)}</tbody>
+              <tbody>{metric(rows.multi).map(([k, a], i) => <tr key={k} className={k === "Original repository snapshot" ? "mono-row" : ""}><td>{k}</td><td>{a}</td><td>{metric(rows.base)[i][1]}</td></tr>)}</tbody>
             </table>
           )}
-          {rows && str(rows.multi.started?.payload.base_hash) !== str(rows.base.started?.payload.base_hash) && <p className="warn">Base revisions differ. These runs did not start from the same code.</p>}
-          <p className="muted small">Checks show the latest observed result. Turns and tokens come from the latest usage report. Unisolated results never count as verified evidence.</p>
+          {rows && str(rows.multi.started?.payload.base_hash) !== str(rows.base.started?.payload.base_hash) && <p className="warn">The original repository snapshots differ. These runs did not start from the same code.</p>}
+          <p className="muted small">Checks show the latest observed result. Turns and tokens come from the latest usage report. Results without a protected environment never count toward approval.</p>
         </>
       )}
     </section>
