@@ -21,6 +21,11 @@ export function classifyEdit(
   const protectedNames = new Set([
     "conftest.py",
     "pytest.ini",
+    ".pytest.ini",
+    "pytest.py",
+    "_pytest.py",
+    "sitecustomize.py",
+    "usercustomize.py",
     "pyproject.toml",
     "setup.cfg",
     "setup.py",
@@ -36,8 +41,10 @@ export function classifyEdit(
   ]);
   if (
     parts.some((part) => testDirs.has(part)) ||
+    parts.some((part) => part === "pytest" || part === "_pytest") ||
     (parts.includes(".github") && parts.includes("workflows")) ||
     protectedNames.has(name) ||
+    name.endsWith(".pth") ||
     /^test_.*\.py$/.test(name) ||
     /_test\.py$/.test(name) ||
     /^(?:jest|vitest|playwright|cypress)\.config\./.test(name)

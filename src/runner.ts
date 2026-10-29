@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { entries } from "./tree";
 import { verifyCandidate } from "./verifier";
 
@@ -91,6 +91,21 @@ function safeArgv(argv: unknown): string[] {
   return argv as string[];
 }
 
+function checkArgs(argv: string[], repo: string, work: string): string[] {
+  const args = ["-p", "no:cacheprovider", "--noconftest", "-c", `${work}/pytest.ini`, "--rootdir", work];
+  let targets = 0;
+  for (let i = 3; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "-p" && argv[i + 1] === "no:cacheprovider") { i++; continue; }
+    if (["-q", "-s", "-v", "-x"].includes(arg)) { args.push(arg); continue; }
+    if (arg.startsWith("-") || isAbsolute(arg) || arg.split(/[\\/]/).includes("..") || arg.includes("\\")) throw Error("CHECK_NOT_ALLOWED");
+    args.push(`${repo}/${arg}`);
+    targets++;
+  }
+  if (!targets) args.push(repo);
+  return args;
+}
+
 export function makeRunner(allowUnisolated: boolean): Runner {
   const engine = Bun.which("podman") || Bun.which("docker");
   if (!engine && !allowUnisolated) throw Error("SANDBOX_UNAVAILABLE");
@@ -166,15 +181,19 @@ export function makeRunner(allowUnisolated: boolean): Runner {
     isolation,
     async check(snapshot, config, deadline) {
       const argv = safeArgv(config.check.argv);
-      if (isolation === "unisolated")
-        return execute(
-          ["python3", ...argv.slice(1)],
-          snapshot,
-          environment,
-          deadline,
-        );
-      return execute(
-        [
+      const work = mkdtempSync(join(tmpdir(), "devpilot-check-"));
+      const bootstrap = resolve(import.meta.dir, "verification/check_bootstrap.py");
+      writeFileSync(join(work, "pytest.ini"), "[pytest]\n");
+      try {
+        if (isolation === "unisolated")
+          return await execute(
+            ["python3", "-I", bootstrap, site, snapshot, ...checkArgs(argv, snapshot, work)],
+            work,
+            environment,
+            deadline,
+          );
+        return await execute(
+          [
           engine!,
           "run",
           "--rm",
@@ -190,19 +209,27 @@ export function makeRunner(allowUnisolated: boolean): Runner {
           "/tmp:rw,nosuid,size=64m",
           "--volume",
           `${snapshot}:/repo:ro`,
+          "--volume",
+          `${work}:/check:rw`,
+          "--volume",
+          `${bootstrap}:/check_bootstrap.py:ro`,
           "--workdir",
-          "/repo",
+          "/check",
           "--env",
           "PYTHONDONTWRITEBYTECODE=1",
           "--env",
           "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
           image,
-          ...argv,
+          "python3", "-I", "/check_bootstrap.py", "", "/repo",
+          ...checkArgs(argv, "/repo", "/check"),
         ],
-        snapshot,
+        work,
         engineEnv,
         deadline,
       );
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
     },
     async acceptance(snapshot, config, suite, deadline) {
       safeArgv(config.acceptance.argv);

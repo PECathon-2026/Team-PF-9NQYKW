@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -183,6 +184,7 @@ test("private failures publish test IDs and status, never hidden source or trace
     role: "assistant",
     content: JSON.stringify(value),
   });
+
   const script = {
     shogun: [
       msg({
@@ -354,3 +356,18 @@ test("unisolated verification uses a network namespace when available", async ()
     host.stop(true);
   }
 }, 20000);
+
+test("Sentinel uses trusted pytest and clean configuration despite candidate shadow files", async () => {
+  const f = setup("def value(): return 0\n", "");
+  const marker = join(f.root, "hijacked");
+  mkdirSync(join(f.candidate, "tests"));
+  writeFileSync(join(f.candidate, "tests", "test_failure.py"), "def test_failure():\n    assert False\n");
+  writeFileSync(join(f.candidate, "pytest.py"), `open(${JSON.stringify(marker)}, "w").write("shadow")\nraise SystemExit(0)\n`);
+  writeFileSync(join(f.candidate, ".pytest.ini"), "[pytest]\naddopts = --collect-only\n");
+  writeFileSync(join(f.candidate, "conftest.py"), `open(${JSON.stringify(marker)}, "w").write("conftest")\ndef pytest_sessionfinish(session): session.exitstatus = 0\n`);
+  writeFileSync(join(f.candidate, "sitecustomize.py"), `open(${JSON.stringify(marker)}, "w").write("startup")\n`);
+  const result = await makeRunner(true).check(f.candidate, f.config, Date.now() + 15000);
+  expect(result.exitCode).not.toBe(0);
+  expect(result.output).toContain("test_failure");
+  expect(existsSync(marker)).toBe(false);
+});
