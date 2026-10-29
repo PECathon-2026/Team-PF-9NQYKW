@@ -158,7 +158,7 @@ h4{margin:28px 0 10px;font-size:10px;font-weight:600;letter-spacing:.14em;text-t
 .overview-summary>div:last-child{border:0}
 .overview-summary span{color:var(--mut);font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
 .overview-summary strong{display:block;margin-top:3px;font-size:15px;font-weight:550;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
-.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.board{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
 .col{background:rgba(18,18,17,.38);border:1px solid rgba(255,255,255,.05);border-radius:5px;padding:12px;min-height:120px}
 .colh{color:#aba39a;font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;margin-bottom:11px}
 .task{background:#302e2b;border:1px solid #46413d;border-left:2px solid #ac6955;border-radius:4px;padding:10px;margin-bottom:8px;font-size:12px;overflow-wrap:anywhere;animation:fade-up var(--med) var(--ease) both;transition:border-color var(--fast)}
@@ -297,3 +297,16 @@ pre.diff{background:#171716;border:1px solid var(--line);border-radius:4px;paddi
 }
 
 .dojo .agent-figure{margin-bottom:22px}
+/* Blocked tasks and the approval evidence panel */
+.col-blocked .colh{color:var(--bad)}
+.col-blocked .task{border-left-color:var(--bad);background:#352824}
+.col-blocked .task:hover{border-left-color:var(--bad)}
+.why .kv{display:grid;grid-template-columns:130px minmax(0,1fr);gap:9px 12px;font-size:12px;margin-bottom:6px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.why .kv>span:nth-child(odd){color:var(--mut)}
+.why-download{margin-left:auto;font-family:var(--sans);font-size:11px;padding:6px 10px}
+.why-badge{margin-left:0}
+.why-missing td{background:rgba(217,135,113,.08)}
+.why-checks{list-style:none;margin:0;padding:0;font-size:12px}
+.why-checks>li{padding:8px 0;border-top:1px solid var(--line)}
+.why-checks ul{list-style:none;margin:6px 0 0;padding-left:18px}
+.why-checks ul li+li{margin-top:3px}

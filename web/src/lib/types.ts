@@ -11,12 +11,12 @@ export interface MissionEvent {
   /** Present as "unisolated" on events from a run without sandbox isolation (may also appear in payload). */
   isolation?: string;
 }
-export interface UsageCount { turns: number; input_tokens: number; output_tokens: number; pass_turns?: number }
-const isCount = (c: unknown): c is UsageCount => { const o = c as UsageCount; return !!o && [o.turns, o.input_tokens, o.output_tokens].every((n) => typeof n === "number" && n >= 0) && (o.pass_turns === undefined || (typeof o.pass_turns === "number" && Number.isFinite(o.pass_turns) && o.pass_turns >= 0)); };
+export interface UsageCount { turns: number; input_tokens: number; output_tokens: number }
+const isCount = (c: unknown): c is UsageCount => { const o = c as UsageCount; return !!o && [o.turns, o.input_tokens, o.output_tokens].every((n) => typeof n === "number" && n >= 0); };
 /** Optional per-role turn budget: {<agent>: non-negative integer}. */
 export const isBudget = (b: unknown): b is Record<string, number> => typeof b === "object" && b !== null && !Array.isArray(b)
   && Object.entries(b as object).every(([k, n]) => (AGENTS as readonly string[]).includes(k) && Number.isInteger(n) && n >= 0);
-/** usage payload: cumulative {per_agent: {<agent>: UsageCount}, total: UsageCount, budget?: {<agent>: n}}. */
+/** usage payload: cumulative {per_agent: {<agent>: UsageCount}, total: UsageCount, budget?: {<agent>: n}, pass_turns?: {<agent>: n}} (pass_turns is top-level). */
 export const isUsagePayload = (p: Record<string, unknown>) => isCount(p.total) && typeof p.per_agent === "object" && p.per_agent !== null
   && Object.entries(p.per_agent as object).every(([k, v]) => (AGENTS as readonly string[]).includes(k) && isCount(v))
   && (p.budget === undefined || isBudget(p.budget));

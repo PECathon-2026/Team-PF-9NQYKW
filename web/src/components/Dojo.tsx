@@ -7,7 +7,7 @@ import verifier from "../assets/agents/verifier@192.webp";
 import shadowReview from "../assets/agents/shadow_review@192.webp";
 import shadowSecurity from "../assets/agents/shadow_security@192.webp";
 import type { Agent } from "../lib/types";
-import { stageState, type View } from "../lib/derive";
+import { agentTurns, stageState, type View } from "../lib/derive";
 import { AGENT_NAMES } from "../lib/labels";
 
 export type FigureAgent = "shogun" | "samurai" | "sentinel" | "verifier" | "shadow_review" | "shadow_security";
@@ -28,7 +28,7 @@ const ROLE_MARKS: Record<FigureAgent, { icon: LucideIcon; accent: string }> = {
 };
 const STATUS = { idle: "Idle", work: "Working", done: "Done", failed: "Failed" } as const;
 function turns(v: View, a: Agent) {
-  const usage = v.usage?.per_agent[a]; const used = usage?.pass_turns ?? usage?.turns; const cap = v.budget?.[a];
+  const used = agentTurns(v.usage, a); const cap = v.budget?.[a];
   if (used === undefined && cap === undefined) return null;
   const u = used ?? 0;
   if (cap === undefined || u > cap) return { label: `${u} turns`, level: "", title: undefined };

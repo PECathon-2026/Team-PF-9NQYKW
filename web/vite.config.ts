@@ -4,5 +4,5 @@ import react from "@vitejs/plugin-react";
 // The service accepts the Vite origin via DEVPILOT_ALLOWED_ORIGINS (default includes :5173).
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, proxy: { "/missions": "http://127.0.0.1:8787", "/ws": { target: "ws://127.0.0.1:8787", ws: true } } },
+  server: { port: 5173, proxy: { "/missions": "http://127.0.0.1:8787", "/requests": "http://127.0.0.1:8787", "/ws": { target: "ws://127.0.0.1:8787", ws: true } } },
 });

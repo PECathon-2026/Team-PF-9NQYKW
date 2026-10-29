@@ -1,4 +1,5 @@
 import { isEvent, type MissionEvent } from "./types";
+import { LOCAL_CATALOG, normalizeRequests, type RequestCatalog } from "./requests";
 // POST /missions -> 202 {"id","state"} (doc). Accept legacy {mission_id} too.
 export async function createMission(repo: string, request: string): Promise<string> {
   const r = await fetch("/missions", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ repo, request }) });
@@ -6,6 +7,18 @@ export async function createMission(repo: string, request: string): Promise<stri
   const j = await r.json(); const id = j.mission_id ?? j.id;
   if (typeof id !== "string") throw new Error("The server did not return a mission ID.");
   return id;
+}
+/** Registered requests per repo from GET /requests ({ requests: [{ repo, request, label, has_acceptance }] }).
+ *  A 404 or unusable response falls back to the local list in lib/requests.ts. */
+export async function fetchRequests(signal?: AbortSignal): Promise<{ catalog: RequestCatalog; source: "service" | "local" }> {
+  try {
+    const r = await fetch("/requests", { credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+    if (r.ok && (r.headers.get("content-type") ?? "").includes("json")) {
+      const catalog = normalizeRequests(await r.json());
+      if (catalog) return { catalog, source: "service" };
+    }
+  } catch (e) { if (signal?.aborted) throw e; }
+  return { catalog: LOCAL_CATALOG, source: "local" };
 }
 export async function approve(id: string, approved: boolean) {
   const r = await fetch(`/missions/${encodeURIComponent(id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ approved }) });
@@ -27,13 +40,19 @@ export function wsUrl(id: string, after: number | null) {
 }
 /** Live subscription with dedupe by id and reconnect from last id. */
 export function subscribe(id: string, onEvent: (e: MissionEvent) => void, onStatus: (s: string) => void) {
-  let last: number | null = null; let closed = false; let ws: WebSocket | null = null; const seen = new Set<number>();
+  let last: number | null = null; let closed = false; let ws: WebSocket | null = null; let retry: ReturnType<typeof setTimeout> | undefined; const seen = new Set<number>();
   const connect = () => {
-    ws = new WebSocket(wsUrl(id, last)); onStatus("connecting");
-    ws.onopen = () => onStatus("live");
-    ws.onmessage = (m) => { try { const e = JSON.parse(m.data); if (isEvent(e) && e.mission_id === id && !seen.has(e.id)) { seen.add(e.id); last = Math.max(last ?? 0, e.id); onEvent(e); } } catch { /* drop malformed */ } };
-    ws.onclose = () => { if (!closed) { onStatus("reconnecting"); setTimeout(connect, 1500); } };
+    retry = undefined;
+    if (closed) return;
+    const socket = new WebSocket(wsUrl(id, last)); ws = socket; onStatus("connecting");
+    socket.onopen = () => { if (!closed) onStatus("live"); };
+    socket.onmessage = (m) => { if (closed) return; try { const e = JSON.parse(m.data); if (isEvent(e) && e.mission_id === id && !seen.has(e.id)) { seen.add(e.id); last = Math.max(last ?? 0, e.id); onEvent(e); } } catch { /* drop malformed */ } };
+    socket.onclose = () => { if (closed || ws !== socket) return; onStatus("reconnecting"); retry = setTimeout(connect, 1500); };
   };
   connect();
-  return () => { closed = true; ws?.close(); };
+  return () => {
+    closed = true; clearTimeout(retry); retry = undefined;
+    const socket = ws; ws = null;
+    if (socket) { socket.onopen = socket.onmessage = socket.onclose = null; socket.close(); }
+  };
 }

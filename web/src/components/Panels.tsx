@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MissionEvent } from "../lib/types";
-import { approved, col, isResolved, short, str, type View } from "../lib/derive";
+import { agentTurns, approved, buildPatch, col, isResolved, revisionDiffs, secondsLeft, short, str, type View } from "../lib/derive";
 import { CONNECTION, agentName, eventLabel, humanize, plural, stateLabel } from "../lib/labels";
 
 // All dynamic text is rendered as React text nodes (never innerHTML).
@@ -15,11 +15,10 @@ export const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : 
 const time = (ts: number) => new Date(ts).toLocaleTimeString([], { hour12: false });
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const COLUMNS: Record<string, string> = { pending: "Pending", ready: "Ready", running: "Running", done: "Done" };
+const COLUMNS: Record<string, string> = { pending: "Pending", ready: "Ready", running: "Running", blocked: "Blocked", done: "Done" };
 
 export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: string; now: number }) {
-  const deadline = Number(v.started?.payload.deadline ?? 0);
-  const left = deadline ? Math.max(0, Math.round((deadline - (v.done?.ts ?? now)) / 1000)) : null;
+  const clockLeft = secondsLeft(v, v.done?.ts ?? now); const left = clockLeft?.left ?? null;
   const terminal = !!v.done || v.state === "ESCALATED" || v.state === "REJECTED";
   const endTs = v.done?.ts ?? v.events[v.events.length - 1]?.ts;
   const wall = Number(v.done?.payload.wall_elapsed_ms);
@@ -33,9 +32,9 @@ export function Header({ v, mode, conn, now }: { v: View; mode: string; conn: st
       <div className="hstats">
         <span className={`state s-${v.state.toLowerCase()}`}>{stateLabel(v.state)}</span>
         <span className="muted" title={v.currentRev ?? undefined}>Revision <code>{short(v.currentRev)}</code></span>
-        {took !== null ? <span className="muted" title="Total mission duration">Finished in {clock(took)}</span> : left !== null && <span className={left < 30 ? "warn" : "muted"} title="Time left before the mission deadline">{clock(left)} left</span>}
+        {took !== null ? <span className="muted" title="Total mission duration">Finished in {clock(took)}</span> : left !== null && <span className={left < 30 && !clockLeft?.paused ? "warn" : "muted"} title={clockLeft?.paused ? "The deadline is paused while approval is pending" : "Time left before the mission deadline, including any extensions"}>{clock(left)} left{clockLeft?.paused ? " · paused" : ""}</span>}
         <span className="muted">Fix cycles {v.fixCycles}/3</span>
-        {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => `${agentName(a)}: ${u.pass_turns ?? u.turns}${v.budget?.[a] !== undefined && (u.pass_turns !== undefined || u.turns <= v.budget[a]) ? `/${v.budget[a]}` : ""} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tokens`).join("\n")}>{plural(v.usage.total.turns, "turn")} · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tokens</span>}
+        {v.usage && <span className="muted" title={Object.entries(v.usage.per_agent).map(([a, u]) => { const used = agentTurns(v.usage, a) ?? u.turns; const cap = v.budget?.[a]; return `${agentName(a)}: ${used}${cap !== undefined && used <= cap ? `/${cap}` : ""} turns, ${fmtTok(u.input_tokens + u.output_tokens)} tokens`; }).join("\n")}>{plural(v.usage.total.turns, "turn")} · {fmtTok(v.usage.total.input_tokens + v.usage.total.output_tokens)} tokens</span>}
         {v.unisolated.size > 0 && <span className="tag uniso" title="This runner has no sandbox isolation. Its results cannot satisfy the approval gate.">unisolated runner</span>}
         <span className={`conn conn-${mode === "replay" ? "simulated" : conn}`}>{mode === "replay" ? "Simulated" : CONNECTION[conn] ?? humanize(conn)}</span>
       </div>
@@ -56,7 +55,7 @@ export function Escalation({ v }: { v: View }) {
 }
 
 export function TaskBoard({ v }: { v: View }) {
-  const cols = ["pending", "ready", "running", "done"];
+  const cols = ["pending", "ready", "running", "blocked", "done"];
   const crit = Array.isArray(v.plan?.payload.criteria) ? (v.plan!.payload.criteria as unknown[]) : [];
   return (
     <section className="card scroll" key={v.plan?.id ?? 0}>
@@ -65,7 +64,7 @@ export function TaskBoard({ v }: { v: View }) {
       {!v.plan && <p className="muted">No plan yet.</p>}
       <div className="board">
         {cols.map((c) => (
-          <div key={c} className={`col${v.tasks.some((t) => col(t.status) === c) ? "" : " empty"}`}>
+          <div key={c} className={`col col-${c}${v.tasks.some((t) => col(t.status) === c) ? "" : " empty"}`}>
             <div className="colh">{COLUMNS[c]}</div>
             {!v.tasks.some((t) => col(t.status) === c) && <span className="empty-dash" aria-label="No tasks">—</span>}
             {v.tasks.filter((t) => col(t.status) === c).map((t) => (
@@ -215,7 +214,7 @@ export function Approval({ v, onDecide, busy, error }: { v: View; onDecide: (a: 
         <span>Revision</span><code>{a.code_rev ?? str(a.payload.revision)}</code>
         <span>Tree</span><code>{str(a.payload.tree_hash)}</code>
         <span>Base</span><code>{str(a.payload.base_hash ?? v.started?.payload.base_hash)}</code>
-        <span>Evidence</span><span>{(a.payload.evidence_ids as number[] | undefined)?.map((i) => `#${i}${v.staleIds.has(i) ? " (stale)" : ""}`).join(" ")}</span>
+        <span>Evidence</span><span>{v.citations.map((c, i) => <span key={c.id} className={c.event ? undefined : "fail"}>{i ? " " : ""}#{c.id}{!c.event ? " (missing)" : c.stale ? " (stale)" : ""}</span>)}</span>
         <span>Open findings</span><span>{v.findings.filter((f) => !isResolved(f.action)).length}</span>
       </div>}
       {v.approvalResult ? <p className="decision">Decision recorded: <strong>{approved(v.approvalResult) ? "Approved" : "Rejected"}</strong></p> : (
@@ -228,6 +227,106 @@ export function Approval({ v, onDecide, busy, error }: { v: View; onDecide: (a: 
         </>
       )}
       {error && <p className="fail">{error}</p>}
+    </section>
+  );
+}
+
+/** One cited event, described by what it attests to. */
+function cited(e: MissionEvent): { name: string; outcome: string; ok?: boolean } {
+  const p = e.payload;
+  switch (e.type) {
+    case "test_result": return { name: str(p.suite_id ?? p.check_id, "check"), outcome: cap(str(p.outcome, "unknown")), ok: p.outcome === "passed" };
+    case "finding": return { name: str(p.finding_id, `#${e.id}`), outcome: `${humanize(str(p.action, "open"))} · ${str(p.severity, "info")}`, ok: isResolved(str(p.action)) || p.blocking === false };
+    case "diff": return { name: Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : "Revision", outcome: "Revision recorded" };
+    case "tool_result": return { name: str(p.call_id, "tool"), outcome: p.ok === false ? "Error" : "OK", ok: p.ok !== false };
+    default: return { name: eventLabel(e.type), outcome: "—" };
+  }
+}
+
+export function WhyApprove({ v, fetchArtifact }: { v: View; fetchArtifact?: (id: string) => Promise<string> }) {
+  const [downloadError, setDownloadError] = useState("");
+  const a = v.pendingApproval ?? v.approvalResult;
+  if (!a) return null;
+  const rev = a.code_rev ?? (str(a.payload.revision) || null);
+  const diffs = revisionDiffs(v.diffs, rev); const latest = diffs[diffs.length - 1];
+  const base = str(a.payload.base_hash) || str(latest?.payload.base_hash) || str(v.started?.payload.base_hash);
+  const tree = str(a.payload.tree_hash);
+  const missing = v.citations.filter((c) => !c.event);
+  const missionId = a.mission_id;
+
+  // Isolation is stamped only on test_result payloads; judge the runs at this revision plus anything cited.
+  const runs = v.events.filter((e) => e.type === "test_result" && (e.code_rev === rev || v.citations.some((c) => c.id === e.id)));
+  const isolation = runs.some((e) => v.unisolated.has(e.id)) ? "unisolated" : runs.length && runs.every((e) => e.payload.isolation === "isolated") ? "isolated" : "unknown";
+
+  const descriptions = new Map((Array.isArray(v.plan?.payload.criteria) ? v.plan!.payload.criteria as Record<string, unknown>[] : [])
+    .filter((c) => c && typeof c === "object").map((c) => [str(c.id), str(c.description)]));
+  const checks = v.checks.filter((c) => c.code_rev === rev);
+
+  const done = v.done; const appliedRev = str(done?.payload.applied_revision);
+  const appliedPath = str(done?.payload.applied_path ?? done?.payload.applied_to ?? v.approvalResult?.payload.applied_path);
+  const landed = appliedRev || appliedPath
+    ? <span className="pass">Applied {appliedRev && <code title={appliedRev}>{short(appliedRev)}</code>} to <code>{appliedPath || `runtime/missions/${missionId}/target/current`}</code>{done?.payload.recovered === true ? " (recovered after restart)" : ""}</span>
+    : v.approvalResult && !approved(v.approvalResult) ? <span className="muted">Not applied: rejected</span>
+    : done ? <span className="warn">Not applied: mission {str(done.payload.status, "finished").toLowerCase()}{v.escalations.length ? ` (${humanize(str(v.escalations[v.escalations.length - 1].payload.reason))})` : ""}</span>
+    : v.approvalResult ? <span className="muted">Approved; applying</span>
+    : <span className="muted">Not applied yet</span>;
+
+  const download = async () => {
+    setDownloadError("");
+    try {
+      if (!latest) throw new Error("No diff recorded for this revision.");
+      const artifact = str(latest.payload.artifact_id ?? latest.payload.diff_artifact_id);
+      const text = typeof latest.payload.text === "string" ? latest.payload.text
+        : artifact && fetchArtifact ? await fetchArtifact(artifact) : null;
+      if (text === null) throw new Error("The diff text is not available.");
+      const blob = new Blob([buildPatch(text, { mission: missionId, revision: rev, base, tree })], { type: "text/x-diff" });
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = `${missionId}-${(rev ?? "revision").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40)}.patch`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e) { setDownloadError(`Could not build the patch: ${e instanceof Error ? e.message : String(e)}`); }
+  };
+
+  return (
+    <section className="card why">
+      <h3>Why approve {v.pendingApproval && !v.approvalResult && <span className={v.gate.ok ? "tag ok" : "tag stale"}>{v.gate.ok ? "gate passes" : "gate blocked"}</span>}
+        <button className="why-download" disabled={!latest} onClick={download} title={latest ? "Unified diff from the original base to this revision" : "No diff recorded for this revision"}>Download patch</button></h3>
+      <div className="kv">
+        <span>Revision</span><code>{rev ?? "—"}</code>
+        <span>Tree hash</span><code>{tree || "—"}</code>
+        <span>Base hash</span><code>{base || "—"}</code>
+        <span>Isolation</span><span><span className={isolation === "isolated" ? "tag ok why-badge" : "tag uniso why-badge"} title={isolation === "unisolated" ? "A run lacked sandbox isolation. It cannot satisfy the gate." : isolation === "isolated" ? "Every check at this revision ran in the isolated runner" : "No isolation stamp on the checks for this revision"}>{isolation}</span></span>
+        <span>Landed</span>{landed}
+      </div>
+      <h4>Cited evidence</h4>
+      {missing.length > 0 && <p className="fail small">Missing evidence {missing.map((c) => `#${c.id}`).join(", ")}: not in this mission's event stream. The gate does not pass.</p>}
+      <table className="tbl">
+        <thead><tr><th>Event</th><th>Type</th><th>Subject</th><th>Result</th><th>Revision</th><th>Source</th></tr></thead>
+        <tbody>
+          {v.citations.length === 0 && <tr><td colSpan={6} className="fail">The approval cites no evidence.</td></tr>}
+          {v.citations.map((c) => {
+            if (!c.event) return <tr key={c.id} className="why-missing"><td className="mono fail">#{c.id}</td><td colSpan={5} className="fail">Missing: no such event in this mission</td></tr>;
+            const d = cited(c.event);
+            return <tr key={c.id} className={c.stale ? "is-stale" : ""}>
+              <td className="mono">#{c.id}</td><td>{eventLabel(c.event.type)}</td><td className="mono">{d.name}</td>
+              <td className={d.ok === undefined ? "" : d.ok ? "pass" : "fail"}>{d.outcome}</td>
+              <td><code title={c.event.code_rev ?? undefined}>{short(c.event.code_rev)}</code></td>
+              <td><Prov e={c.event} stale={c.stale} unisolated={RUN_TYPES.has(c.event.type) && v.unisolated.has(c.event.id)} /></td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+      <h4>Checks and acceptance criteria at this revision</h4>
+      {checks.length === 0 ? <p className="muted">No checks have run on this revision.</p> : <ul className="why-checks">
+        {checks.map((c) => {
+          const criteria = Array.isArray(c.event.payload.criteria) ? c.event.payload.criteria as { id?: unknown; passed?: unknown }[] : [];
+          return <li key={c.key}>
+            <span className={c.outcome === "passed" && !c.stale ? "pass" : "fail"}>{c.outcome === "passed" ? "✓" : "✗"}</span> <span className="mono">{c.key}</span> <span className="muted small">{c.kind === "acceptance" ? "Acceptance suite" : "Project check"} · {cap(c.outcome)} · #{c.event.id}</span>
+            {criteria.length > 0 && <ul>{criteria.map((x, i) => <li key={i}><span className={x.passed === true ? "pass" : "fail"}>{x.passed === true ? "✓" : "✗"}</span> <span className="mono">{str(x.id, `criterion ${i + 1}`)}</span>{descriptions.get(str(x.id)) ? <span className="muted"> {descriptions.get(str(x.id))}</span> : null}</li>)}</ul>}
+          </li>;
+        })}
+      </ul>}
+      {downloadError && <p className="fail">{downloadError}</p>}
     </section>
   );
 }

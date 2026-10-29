@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowRight, Check, ChevronRight, CirclePlay, Columns2, Command, FileDiff, GitBranch, LayoutDashboard, ListChecks, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck, X } from "lucide-react";
-import { approve, createMission, subscribe } from "./lib/api";
+import { approve, createMission, fetchRequests, subscribe } from "./lib/api";
 import { col, derive, isResolved, short } from "./lib/derive";
 import { assertValid, decisionEvents, stockScript, titlesScript } from "./lib/replay";
-import { REQUESTS } from "./lib/requests";
+import { LOCAL_CATALOG, REQUESTS, type RequestCatalog } from "./lib/requests";
 import { errorText, eventLabel } from "./lib/labels";
 import { REPOS, type MissionEvent, type RepoId } from "./lib/types";
-import { Approval, DiffViewer, Escalation, Evidence, Header, TaskBoard, Timeline } from "./components/Panels";
+import { Approval, DiffViewer, Escalation, Evidence, Header, TaskBoard, Timeline, WhyApprove } from "./components/Panels";
 import { Comparison } from "./components/Comparison";
 import { CAST, Dojo, type FigureAgent } from "./components/Dojo";
 import { Background } from "./components/Background";
@@ -25,6 +25,10 @@ export default function App() {
   const initialRepo = params.get("repo");
   const [repo, setRepo] = useState<RepoId>(REPOS.includes(initialRepo as RepoId) ? initialRepo as RepoId : "stock");
   const [request, setRequest] = useState(() => REQUESTS[REPOS.includes(initialRepo as RepoId) ? initialRepo as RepoId : "stock"]);
+  // Registered requests for the launch dropdown, from the service's GET /requests
+  // (falls back to the local list in lib/requests.ts if the service is unreachable).
+  const [catalog, setCatalog] = useState<RequestCatalog>(LOCAL_CATALOG);
+  useEffect(() => { const ac = new AbortController(); fetchRequests(ac.signal).then((r) => setCatalog(r.catalog), () => {}); return () => ac.abort(); }, []);
   const [missionId, setMissionId] = useState<string | null>(null);
   const [events, setEvents] = useState<MissionEvent[]>([]);
   const [conn, setConn] = useState("idle");
@@ -65,7 +69,8 @@ export default function App() {
     if (!r.ok) throw new Error(String(r.status)); return r.text();
   }, [missionId]);
   const newMission = () => { stopReplay(); setMissionId(null); setEvents([]); setErr(""); setFilter("all"); navigate("mission"); };
-  const chooseRepo = (r: RepoId) => { if (r !== repo) newMission(); setRepo(r); setRequest(REQUESTS[r]); navigate("mission"); };
+  const chooseRepo = (r: RepoId) => { if (r !== repo) newMission(); setRepo(r); setRequest(catalog[r][0] ?? REQUESTS[r]); navigate("mission"); };
+  const registered = catalog[repo]; const custom = !registered.includes(request);
   const chooseAgent = (id: FigureAgent) => { setFilter((current) => current === id ? "all" : id); setTab("activity"); navigate("mission"); };
   const toggleReplay = () => { stopReplay(); setEvents([]); setMissionId(null); setMode((m) => m === "live" ? "replay" : "live"); navigate("mission"); };
   const commands = [
@@ -92,13 +97,13 @@ export default function App() {
       {mode === "replay" && <div className="simbar"><CirclePlay size={14} /><span><strong>Demo replay (simulated)</strong> Events are scripted, not from a real run.</span></div>}
       {route === "compare" ? <div className="content compare-page view-enter"><div className="page-heading"><h1>Compare runs</h1><p>A recorded multi-agent mission beside its single-agent baseline.</p></div><Comparison disabled={mode === "replay"} /></div> : <>
         {missionId && <div className="mission-top"><Header v={v} mode={mode} conn={conn} now={now} /></div>}
-        {!missionId ? <div className="content launch-page view-enter"><section className="card launch"><h2 className="launch-heading">New mission</h2><label className="field-label" htmlFor="repo-select">Repository</label><select id="repo-select" value={repo} onChange={(e) => chooseRepo(e.target.value as RepoId)}>{REPOS.map((r) => <option key={r}>{r}</option>)}</select><label className="field-label" htmlFor="mission-request">Request</label><textarea id="mission-request" value={request} onChange={(e) => setRequest(e.target.value)} rows={4} readOnly={mode === "replay"} /><div className="launch-actions"><button className="primary" disabled={busy || !request.trim() || (mode === "replay" && repo !== "stock" && repo !== "titles")} onClick={start}>{mode === "replay" ? "Start replay" : "Launch mission"} <ArrowRight size={15} /></button></div>{mode === "replay" && repo !== "stock" && repo !== "titles" && <p className="muted small launch-note">Demo replay is available for stock and titles.</p>}{err && <p className="fail">{err}</p>}</section></div> : <>
+        {!missionId ? <div className="content launch-page view-enter"><section className="card launch"><h2 className="launch-heading">New mission</h2><label className="field-label" htmlFor="repo-select">Repository</label><select id="repo-select" value={repo} onChange={(e) => chooseRepo(e.target.value as RepoId)}>{REPOS.map((r) => <option key={r}>{r}</option>)}</select><label className="field-label" htmlFor="request-select">Registered request</label><select id="request-select" value={custom ? "" : request} disabled={mode === "replay"} onChange={(e) => setRequest(e.target.value)}>{custom && <option value="" disabled>Custom request</option>}{registered.map((r) => <option key={r} value={r} title={r}>{r.length > 90 ? `${r.slice(0, 89)}…` : r}</option>)}</select><label className="field-label" htmlFor="mission-request">Request</label><textarea id="mission-request" value={request} onChange={(e) => setRequest(e.target.value)} rows={4} readOnly={mode === "replay"} /><div className="launch-actions"><button className="primary" disabled={busy || !request.trim() || (mode === "replay" && repo !== "stock" && repo !== "titles")} onClick={start}>{mode === "replay" ? "Start replay" : "Launch mission"} <ArrowRight size={15} /></button></div>{mode === "replay" && repo !== "stock" && repo !== "titles" && <p className="muted small launch-note">Demo replay is available for stock and titles.</p>}{err && <p className="fail">{err}</p>}</section></div> : <>
           <Dojo v={v} now={now} selected={filter} onSelect={chooseAgent} />
           <div className="tab-bar" role="tablist" aria-label="Mission sections">{TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "section-tab active" : "section-tab"} onClick={() => setTab(t.id)}><t.icon size={15} />{t.label}{t.id === "activity" && <span className="tab-count">{v.events.length}</span>}</button>)}</div>
           <div className={`content tab-content ${pending ? "has-approval" : ""}`}><Escalation v={v} />{err && <p className="fail error-banner">{err}</p>}
             <div className="tab-panel" key={tab} role="tabpanel">
               {tab === "overview" && <><div className="overview-summary"><div><span>Tasks done</span><strong>{v.tasks.filter((t) => col(t.status) === "done").length} / {v.tasks.length}</strong></div><div><span>Checks passed</span><strong>{v.checks.filter((c) => c.outcome === "passed" && !c.stale).length} / {v.checks.length}</strong></div><div><span>Findings</span><strong>{v.findings.length} total · {v.findings.filter((f) => !isResolved(f.action)).length} open</strong></div><div><span>Latest event</span><strong>{v.events.length ? eventLabel(v.events[v.events.length - 1].type) : "—"}</strong></div></div><TaskBoard v={v} /></>}
-              {tab === "evidence" && <Evidence v={v} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <Approval v={v} onDecide={decide} busy={busy} error="" /> : <section className="card"><h3>Approval</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} />}</>}
+              {tab === "evidence" && <Evidence v={v} />}{tab === "diff" && <DiffViewer v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} />}{tab === "activity" && <Timeline v={v} filter={filter} setFilter={setFilter} />}{tab === "approval" && <>{v.pendingApproval || v.approvalResult ? <><Approval v={v} onDecide={decide} busy={busy} error="" /><WhyApprove v={v} fetchArtifact={mode === "live" ? fetchArtifact : undefined} /></> : <section className="card"><h3>Approval</h3><p className="muted">No approval requested yet.</p></section>}{v.pendingApproval && <Evidence v={v} />}</>}
             </div>
           </div>
           {pending && <div className="approval-bar"><div className="approval-symbol"><ShieldCheck size={18} /></div><div className="approval-copy"><strong>{v.gate.ok ? "Ready for your approval" : "Approval requested"} <span title={v.pendingApproval?.code_rev ?? undefined}>{short(v.pendingApproval?.code_rev)}</span></strong>{!v.gate.ok && <small>{v.gate.reasons.join(" · ")}</small>}</div><button onClick={() => setTab("approval")}>Review</button><button disabled={busy} onClick={() => decide(false)}>Reject</button><button className="primary" disabled={!v.gate.ok || busy} title={!v.gate.ok ? v.gate.reasons.join(" · ") : ""} onClick={() => decide(true)}><Check size={15} /> Approve</button></div>}
