@@ -1,7 +1,7 @@
 // Event envelope per ARCHITECTURE.md "Message bus and event contract".
 export const AGENTS = ["orchestrator","shogun","samurai","sentinel","verifier","shadow_review","shadow_security","baseline","human","system"] as const;
 export type Agent = (typeof AGENTS)[number];
-export const EVENT_TYPES = ["mission_started","plan","task_update","agent_msg","tool_call","tool_result","test_result","finding","diff","approval_needed","approval_result","escalation","stale","mission_done","usage"] as const;
+export const EVENT_TYPES = ["mission_started","plan","task_update","agent_msg","turn_start","turn_end","tool_call","tool_result","test_result","finding","diff","approval_needed","approval_requested","approval_result","escalation","stale","mission_done","usage"] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
 export interface MissionEvent {

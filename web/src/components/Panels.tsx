@@ -120,12 +120,14 @@ export function summary(e: MissionEvent): string {
     case "plan": return `plan v${str(p.version)} with ${Array.isArray(p.tasks) ? p.tasks.length : 0} tasks${cite("reason_event_ids")}`;
     case "task_update": return `${str(p.task_id)}: ${str(p.previous_status)} → ${str(p.new_status)}${cite("reason_event_ids")}`;
     case "agent_msg": return `→ ${str(p.to ?? p.recipient)}: ${str(p.message)}${Array.isArray(p.findings) ? ` · ${p.findings.length} findings` : ""}${typeof p.scanner_findings === "number" ? ` · scanner ${p.scanner_findings}` : ""}${cite("evidence_event_ids")}${cite("cited_event_ids")}`;
+    case "turn_start": return "Turn started";
+    case "turn_end": return "Turn ended";
     case "tool_call": return `${str(p.tool)}(${JSON.stringify(p.arguments ?? p.args ?? {})})`;
     case "tool_result": { if (p.ok === false) return `error ${str((p.error as Record<string, unknown> | undefined)?.code ?? p.error, "unknown")}`; const d = p.data as Record<string, unknown> | undefined; const s = d ? (typeof d.content === "string" ? d.content : JSON.stringify(d)) : str(p.result, "ok"); return s; }
     case "test_result": { const cr = Array.isArray(p.criteria) ? (p.criteria as { passed?: boolean }[]) : null; return `${p.phase === "baseline" ? "baseline · " : ""}${str(p.suite_id ?? p.check_id)} ${str(p.outcome)}${p.exit_code !== undefined ? ` (exit ${str(p.exit_code)})` : ""}${cr ? ` · ${cr.filter((c) => c.passed).length}/${cr.length} criteria` : ""}${cite("cause_event_ids")}`; }
     case "finding": return `${str(p.finding_id)} ${str(p.action)} [${str(p.severity)}] ${str(p.title ?? p.description ?? p.resolution)}${cite("evidence_event_ids")}`;
     case "diff": return `${short(str(p.revision))}: ${Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : ""}`;
-    case "approval_needed": return `approval for ${short(e.code_rev)}${cite("evidence_ids")}`;
+    case "approval_needed": case "approval_requested": return `approval for ${short(e.code_rev)}${cite("evidence_ids")}`;
     case "approval_result": return approved(e) ? "approved" : "rejected";
     case "escalation": return `${str(p.reason)}: ${str(p.question)}${cite("relevant_event_ids")}`;
     case "stale": { const inv = p.affected_evidence_ids ?? p.invalidated; return `${short(str(p.old_revision))} → ${short(str(p.new_revision))}: ${str(p.reason)} · invalidated ${Array.isArray(inv) ? inv.map((x) => `#${x}`).join(" ") : ""}`; }

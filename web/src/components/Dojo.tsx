@@ -13,7 +13,7 @@ import shadowReview192 from "../assets/agents/shadow_review@192.webp";
 import shadowSecurity from "../assets/agents/shadow_security.webp";
 import shadowSecurity192 from "../assets/agents/shadow_security@192.webp";
 import type { Agent } from "../lib/types";
-import { col, str, type View } from "../lib/derive";
+import { stageState, str, type View } from "../lib/derive";
 import { summary } from "./Panels";
 
 export type FigureAgent = "shogun" | "samurai" | "sentinel" | "verifier" | "shadow_review" | "shadow_security";
@@ -27,14 +27,6 @@ const FIGURES: Record<FigureAgent, { full: string; small: string }> = {
   sentinel: { full: sentinel, small: sentinel192 }, verifier: { full: verifier, small: verifier192 },
   shadow_review: { full: shadowReview, small: shadowReview192 }, shadow_security: { full: shadowSecurity, small: shadowSecurity192 },
 };
-function moodOf(v: View, a: Agent, now: number): string {
-  if (v.done) return v.state === "COMPLETED" ? "done" : "idle";
-  const mine = v.events.filter((e) => e.agent === a); const last = mine[mine.length - 1];
-  if (last && last.type === "test_result" && last.payload.outcome !== "passed" && now - last.ts < 4000) return "failed";
-  if (last && now - last.ts < 2500) return "work";
-  if (v.tasks.some((t) => col(t.status) === "running" && t.role === a)) return "work";
-  return "idle";
-}
 function TurnMeter({ v, a }: { v: View; a: Agent }) {
   const usage = v.usage?.per_agent[a]; const used = usage?.pass_turns ?? usage?.turns; const cap = v.budget?.[a];
   if (used === undefined && cap === undefined) return null;
@@ -59,7 +51,7 @@ export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; sel
     <div className="cast">
       <div className="pipeline-line" aria-hidden="true"><svg viewBox="0 0 1200 34" preserveAspectRatio="none"><path d="M100 16 H700 M700 16 H770 M770 16 V4 H900 M770 16 V30 H1100" /><circle cx="770" cy="16" r="3" className="fork-node" />{handoffPath && <circle className="handoff-pulse" r="4" key={handoff?.id}><animateMotion dur="2.5s" path={handoffPath} repeatCount="1" fill="freeze" /></circle>}</svg></div>
       {CAST.map((c, i) => {
-        const mood = moodOf(v, c.id, now); const figure = FIGURES[c.id];
+        const mood = stageState(v.events, c.id, now); const figure = FIGURES[c.id];
         const latest = [...v.events].reverse().find((e) => e.agent === c.id && e.type !== "usage");
         const detail = latest ? summary(latest) : "Awaiting activity";
         const StatusIcon = mood === "work" ? LoaderCircle : mood === "done" ? CheckCircle2 : mood === "failed" ? CircleAlert : Circle;

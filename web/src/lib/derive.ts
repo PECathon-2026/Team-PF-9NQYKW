@@ -1,4 +1,4 @@
-import { isBudget, isUnisolated, type MissionEvent, type UsageCount } from "./types";
+import { isBudget, isUnisolated, type Agent, type MissionEvent, type UsageCount } from "./types";
 
 const ids = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : []);
 export const str = (v: unknown, d = ""): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : d);
@@ -10,6 +10,38 @@ export const approved = (e?: MissionEvent) => !!e && (e.payload.decision === tru
 export interface Task { id: string; title: string; role: string; status: string; deps: string[] }
 export interface CheckRow { key: string; kind: "check" | "acceptance"; outcome: string; code_rev: string | null; event: MissionEvent; attempts: number; stale: boolean; duration?: number; exit?: number }
 export interface Finding { id: string; agent: string; severity: string; action: string; description: string; blocking: boolean; resolution: string; sentBack: boolean; code_rev: string | null; stale: boolean; eventId: number; verified: boolean }
+
+export type StageState = "idle" | "work" | "done" | "failed";
+
+/** Derive activity from ordered events, rather than task status or event recency. */
+export function stageState(input: MissionEvent[], agent: Agent, now: number): StageState {
+  const events = [...input].sort((a, b) => a.id - b.id);
+  const calls = new Map<unknown, { agent: Agent; id: number }>();
+  let action: "idle" | "work" | "done" = "idle";
+  let lastStart = -1; let lastAgentEvent: MissionEvent | undefined;
+  let awaitingApproval = false; let finished = false;
+
+  for (const e of events) {
+    if (e.type === "approval_needed" || e.type === "approval_requested") { awaitingApproval = true; if (action === "work") action = "done"; }
+    if (e.type === "approval_result") awaitingApproval = false;
+    if (e.type === "mission_done") { finished = true; if (action === "work") action = "done"; }
+    if (e.type === "tool_call" && e.payload.call_id != null) calls.set(e.payload.call_id, { agent: e.agent, id: e.id });
+    if (e.agent === agent) lastAgentEvent = e;
+    if (e.type === "tool_result") {
+      const call = calls.get(e.payload.call_id);
+      if (call) {
+        if (call.agent === agent && call.id === lastStart) action = "done";
+        calls.delete(e.payload.call_id);
+      } else if (e.agent === agent) action = "done";
+    } else if (e.agent === agent) {
+      if (e.type === "tool_call" || e.type === "turn_start") { action = awaitingApproval || finished ? "done" : "work"; lastStart = e.id; }
+      else if (["turn_end", "agent_msg", "plan", "test_result", "finding", "diff"].includes(e.type)) action = "done";
+    }
+  }
+  // Preserve the existing brief indication for a failed test, except after mission completion.
+  if (!finished && lastAgentEvent?.type === "test_result" && lastAgentEvent.payload.outcome !== "passed" && now - lastAgentEvent.ts < 4000) return "failed";
+  return action === "work" && (awaitingApproval || finished) ? "done" : action;
+}
 
 export interface View {
   events: MissionEvent[]; staleIds: Set<number>; staleBy: Map<number, MissionEvent>;
@@ -66,7 +98,7 @@ export function derive(input: MissionEvent[]): View {
         break;
       }
       case "diff": diffs.push(e); break;
-      case "approval_needed": pendingApproval = e; approvalResult = undefined; break;
+      case "approval_needed": case "approval_requested": pendingApproval = e; approvalResult = undefined; break;
       case "approval_result": approvalResult = e; break;
       case "escalation": escalations.push(e); break;
       case "stale": {
