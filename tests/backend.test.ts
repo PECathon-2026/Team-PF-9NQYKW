@@ -490,6 +490,7 @@ describe("backend", () => {
       registry: f.registry,
       runner: localRunner,
       mock: true,
+      missionTurnLimit: 20,
     });
     apps.push({ close: () => service.close() });
     const mid = service.create("tiny", f.request);
@@ -568,6 +569,16 @@ test("a mission deadline cancels a pending model call and escalates", async () =
     service.store
       .events(mission)
       .some((e) => e.type === "escalation" && e.payload.reason === "DEADLINE"),
+  ).toBe(true);
+  const escalation = service.store
+    .events(mission)
+    .find((e) => e.type === "escalation")!;
+  expect(escalation.payload.question).toContain("deadline expired");
+  expect(escalation.payload.relevant_event_ids.length).toBeGreaterThan(0);
+  expect(
+    escalation.payload.relevant_event_ids.every((id: number) =>
+      service.store.events(mission).some((event) => event.id === id),
+    ),
   ).toBe(true);
 });
 

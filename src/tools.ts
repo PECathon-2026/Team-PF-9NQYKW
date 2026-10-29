@@ -8,6 +8,48 @@ export function commandFor(id: string): string[] {
   if (!Object.hasOwn(allowedCommands, id)) throw Error("COMMAND_NOT_ALLOWED");
   return [...allowedCommands[id]!];
 }
+/** Classify edit targets only after repository path confinement. */
+export function classifyEdit(
+  root: string,
+  path: string,
+): { path: string; kind: "protected" | "documentation" | "source" } {
+  const normalized = normalizedPath(root, path, true);
+  if (!normalized) throw Error("INVALID_PATH");
+  const parts = normalized.toLowerCase().split("/");
+  const name = parts.at(-1)!;
+  const testDirs = new Set(["tests", "test", "__tests__", "testing"]);
+  const protectedNames = new Set([
+    "conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "tox.ini",
+    ".coveragerc",
+    ".pre-commit-config.yaml",
+    "package.json",
+    "bun.lock",
+    "bun.lockb",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+  ]);
+  if (
+    parts.some((part) => testDirs.has(part)) ||
+    (parts.includes(".github") && parts.includes("workflows")) ||
+    protectedNames.has(name) ||
+    /^test_.*\.py$/.test(name) ||
+    /_test\.py$/.test(name) ||
+    /^(?:jest|vitest|playwright|cypress)\.config\./.test(name)
+  )
+    return { path: normalized, kind: "protected" };
+  if (
+    parts.some((part) => part === "docs" || part === "documentation") ||
+    /^readme(?:\.|$)/i.test(name)
+  )
+    return { path: normalized, kind: "documentation" };
+  return { path: normalized, kind: "source" };
+}
 export function readTool(root: string, name: string, args: any): any {
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw Error("INVALID_ARGUMENTS");

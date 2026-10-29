@@ -1,4 +1,12 @@
 export type ReplyPhase = "plan" | "edit" | "review";
+export const PLAN_ROLES = [
+  "shogun",
+  "samurai",
+  "sentinel",
+  "verifier",
+  "shadow_review",
+  "shadow_security",
+] as const;
 
 export const submitPlanTool = {
   type: "function",
@@ -28,9 +36,9 @@ export const submitPlanTool = {
             properties: {
               id: { type: "string" },
               title: { type: "string" },
-              role: { type: "string" },
+              role: { type: "string", enum: [...PLAN_ROLES] },
               status: { type: "string" },
-              owner: { type: "string" },
+              owner: { type: "string", enum: [...PLAN_ROLES] },
               depends_on: { type: "array", items: { type: "string" } },
               criterion_ids: { type: "array", items: { type: "string" } },
             },
@@ -162,19 +170,11 @@ export function validateReply(
       return `tasks[${i}] requires nonempty id and title strings.`;
     if (taskIds.has(task.id)) return `tasks[${i}].id must be unique.`;
     taskIds.add(task.id);
+    for (const field of ["role", "owner"]) {
+      if (task[field] !== undefined && !PLAN_ROLES.includes(task[field]))
+        return `tasks[${i}].${field} must be one of: ${PLAN_ROLES.join(", ")}. Use samurai for an implementer or editor.`;
+    }
     const role = baseline ? "baseline" : task.role || task.owner || "samurai";
-    if (
-      ![
-        "baseline",
-        "shogun",
-        "samurai",
-        "sentinel",
-        "verifier",
-        "shadow_review",
-        "shadow_security",
-      ].includes(role)
-    )
-      return `tasks[${i}].role is not a supported agent.`;
     if (role === (baseline ? "baseline" : "samurai")) hasEditor = true;
   }
   if (!hasEditor)

@@ -1,6 +1,9 @@
 import { Service, type Options } from "./service";
 import { loadRegistry } from "./registry";
 import type { Event } from "./store";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { confined } from "./tree";
 export function startServer(options: Options & { port?: number }) {
   const service = new Service(options);
   const allowedOrigins = new Set(
@@ -74,12 +77,31 @@ export function startServer(options: Options & { port?: number }) {
         if (req.method === "GET" && artifactMatch) {
           const artifact: any = service.store.db
             .query(
-              "SELECT content FROM artifacts WHERE mission_id=? AND id=? AND kind='diff'",
+              "SELECT kind, content FROM artifacts WHERE mission_id=? AND id=? AND kind IN ('diff','debug')",
             )
             .get(artifactMatch[1]!, artifactMatch[2]!);
           if (!artifact)
             return Response.json({ error: "NOT_FOUND" }, { status: 404 });
-          return new Response(artifact.content, {
+          let content = artifact.content;
+          if (artifact.kind === "debug") {
+            if (
+              !/^m_[A-Za-z0-9_-]{1,100}$/.test(artifactMatch[1]!) ||
+              !/^debug_[A-Za-z0-9_-]{1,100}$/.test(artifactMatch[2]!)
+            )
+              return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+            try {
+              content = readFileSync(
+                confined(
+                  join(service.root, "artifacts", artifactMatch[1]!),
+                  `${artifactMatch[2]}.txt`,
+                ),
+                "utf8",
+              );
+            } catch {
+              return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+            }
+          }
+          return new Response(content, {
             headers: {
               "content-type": "text/plain; charset=utf-8",
               "x-content-type-options": "nosniff",

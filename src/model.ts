@@ -23,6 +23,9 @@ export class MiniMax implements Model {
     const key =
       process.env.MINIMAX_API_KEY || process.env.MINIMAX_TOKEN_PLAN_KEY;
     if (!key) throw Error("MODEL_KEY_MISSING");
+    const reasoningEffort = process.env.DEVPILOT_REASONING_EFFORT || "low";
+    if (!["low", "medium", "high", "xhigh", "max"].includes(reasoningEffort))
+      throw Error("MODEL_CONFIGURATION_INVALID");
     const response = await fetch("https://api.minimax.io/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -34,6 +37,7 @@ export class MiniMax implements Model {
         messages,
         tools,
         tool_choice: "auto",
+        reasoning_effort: reasoningEffort,
       }),
       signal,
     });

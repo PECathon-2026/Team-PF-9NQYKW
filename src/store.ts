@@ -19,7 +19,7 @@ export class Store {
     this.db = new Database(path, { create: true });
     this.db
       .exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
- CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, repo TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, base_hash TEXT NOT NULL, base_ref TEXT NOT NULL, current_rev TEXT NOT NULL, snapshot TEXT NOT NULL, suite_hash TEXT, suite TEXT, mode TEXT NOT NULL, turns INTEGER NOT NULL DEFAULT 0 CHECK(turns BETWEEN 0 AND 20), fixes INTEGER NOT NULL DEFAULT 0 CHECK(fixes BETWEEN 0 AND 3), created INTEGER NOT NULL, deadline INTEGER NOT NULL, approval TEXT, decision INTEGER, evidence TEXT NOT NULL DEFAULT '[]');
+ CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, repo TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, base_hash TEXT NOT NULL, base_ref TEXT NOT NULL, current_rev TEXT NOT NULL, snapshot TEXT NOT NULL, suite_hash TEXT, suite TEXT, mode TEXT NOT NULL, turns INTEGER NOT NULL DEFAULT 0 CHECK(turns >= 0), fixes INTEGER NOT NULL DEFAULT 0 CHECK(fixes BETWEEN 0 AND 3), created INTEGER NOT NULL, deadline INTEGER NOT NULL, approval TEXT, decision INTEGER, evidence TEXT NOT NULL DEFAULT '[]');
  CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, mission_id TEXT NOT NULL REFERENCES missions(id), type TEXT NOT NULL, agent TEXT NOT NULL, task_id TEXT, code_rev TEXT, verified INTEGER NOT NULL CHECK(verified IN (0,1)), payload TEXT NOT NULL CHECK(json_valid(payload)));
  CREATE INDEX IF NOT EXISTS events_mission ON events(mission_id,id);
  CREATE TABLE IF NOT EXISTS failures(mission_id TEXT NOT NULL, call_id TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(mission_id,call_id));
@@ -28,6 +28,41 @@ export class Store {
  CREATE TABLE IF NOT EXISTS apply_intents(mission_id TEXT PRIMARY KEY, target TEXT NOT NULL, state TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), kind TEXT NOT NULL, content TEXT NOT NULL, sha256 TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS usage(mission_id TEXT NOT NULL REFERENCES missions(id), agent TEXT NOT NULL, model_turns INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(mission_id, agent));`);
+    // Older databases enforced the previous global 20-turn cap in the schema.
+    // Rebuild the table without changing mission rows or references.
+    const storedSchema = this.db
+      .query(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='missions'",
+      )
+      .get() as { sql: string };
+    if (
+      /CHECK\s*\(\s*turns\s+BETWEEN\s+0\s+AND\s+20\s*\)/i.test(storedSchema.sql)
+    ) {
+      const rebuilt = storedSchema.sql
+        .replace(
+          /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:"missions"|missions)/i,
+          "CREATE TABLE missions_budget_migration",
+        )
+        .replace(
+          /CHECK\s*\(\s*turns\s+BETWEEN\s+0\s+AND\s+20\s*\)/i,
+          "CHECK(turns >= 0)",
+        );
+      this.db.exec("PRAGMA foreign_keys=OFF");
+      try {
+        this.db.transaction(() => {
+          this.db.exec(rebuilt);
+          this.db.exec(
+            "INSERT INTO missions_budget_migration SELECT * FROM missions",
+          );
+          this.db.exec("DROP TABLE missions");
+          this.db.exec(
+            "ALTER TABLE missions_budget_migration RENAME TO missions",
+          );
+        })();
+      } finally {
+        this.db.exec("PRAGMA foreign_keys=ON");
+      }
+    }
     const columns = this.db.query("PRAGMA table_info(missions)").all() as {
       name: string;
     }[];
