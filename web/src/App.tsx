@@ -7,6 +7,7 @@ import { REPOS, type MissionEvent, type RepoId } from "./lib/types";
 import { Approval, DiffViewer, Escalation, Evidence, Header, TaskBoard, Timeline } from "./components/Panels";
 import { Comparison } from "./components/Comparison";
 import { Dojo } from "./components/Dojo";
+import { Background } from "./components/Background";
 
 const DEV = import.meta.env.DEV;
 type Mode = "live" | "replay";
@@ -54,6 +55,8 @@ export default function App() {
   }, [missionId]);
 
   return (
+    <>
+    <Background />
     <div className="app">
       <nav className="top">
         <span className="brand"><span className="mon" aria-hidden="true">D</span>DevPilot</span>
@@ -86,5 +89,6 @@ export default function App() {
         </>
       )}
     </div>
+    </>
   );
 }
