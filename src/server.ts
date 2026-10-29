@@ -2,9 +2,11 @@ import { Service, type Options } from "./service";
 import { loadRegistry } from "./registry";
 import type { Event } from "./store";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { confined } from "./tree";
-export function startServer(options: Options & { port?: number }) {
+export function startServer(
+  options: Options & { port?: number; webDir?: string },
+) {
   const service = new Service(options);
   const allowedOrigins = new Set(
     (
@@ -237,6 +239,8 @@ export function startServer(options: Options & { port?: number }) {
             );
           }
         }
+        if (options.webDir && (req.method === "GET" || req.method === "HEAD"))
+          return serveStatic(options.webDir, url.pathname);
         return new Response("Not found", { status: 404 });
       })();
       if (response && origin) {
@@ -279,7 +283,7 @@ if (import.meta.main) {
   try {
     registry = loadRegistry(
       process.env.DEVPILOT_REGISTRY || "config/repositories.json",
-      process.env.DEVPILOT_FIXTURES_DIR || "../devpilot-fixtures",
+      process.env.DEVPILOT_FIXTURES_DIR || resolve(import.meta.dir, ".."),
     );
   } catch {
     throw Error("Unable to read repository registry");
@@ -288,8 +292,12 @@ if (import.meta.main) {
     root: process.env.DEVPILOT_RUNTIME || "runtime",
     registry,
     mock: process.env.DEVPILOT_MODEL === "mock",
+    port: Number(process.env.PORT || 8787),
+    webDir: process.env.DEVPILOT_WEB_DIR || undefined,
   });
-  console.log("DevPilot listening on http://127.0.0.1:8787");
+  console.log(
+    `DevPilot listening on http://127.0.0.1:${process.env.PORT || 8787}`,
+  );
 }
 
 /** Public list of registered requests for UI dropdowns (no suite paths or digests). */
@@ -311,4 +319,20 @@ export function listRequests(registry: Record<string, any>) {
     }
   }
   return out;
+}
+
+/** Serve a built single-page app; unknown non-asset paths fall back to index.html. */
+async function serveStatic(webDir: string, pathname: string) {
+  const root = resolve(webDir);
+  let rel = decodeURIComponent(pathname).replace(/^\/+/, "") || "index.html";
+  let file = resolve(root, rel);
+  if (file !== root && !file.startsWith(root + "/"))
+    return new Response("Not found", { status: 404 });
+  let f = Bun.file(file);
+  if (!(await f.exists()) || rel.endsWith("/")) {
+    if (/\.[a-z0-9]+$/i.test(rel)) return new Response("Not found", { status: 404 });
+    f = Bun.file(join(root, "index.html"));
+    if (!(await f.exists())) return new Response("Not found", { status: 404 });
+  }
+  return new Response(f);
 }

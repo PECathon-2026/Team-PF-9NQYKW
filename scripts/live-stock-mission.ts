@@ -9,7 +9,7 @@ async function main() {
   try {
     if (!process.env.MINIMAX_API_KEY) throw Error("MODEL_KEY_MISSING");
     const fixtureRoot = resolve(
-      process.env.DEVPILOT_FIXTURES_DIR || "../devpilot-fixtures",
+      process.env.DEVPILOT_FIXTURES_DIR || resolve(import.meta.dir, ".."),
     );
     const registry = loadRegistry(
       process.env.DEVPILOT_REGISTRY || "config/repositories.json",

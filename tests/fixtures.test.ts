@@ -9,7 +9,7 @@ import type { Runner } from "../src/runner";
 import { fixtureScript } from "../src/mock-fixtures";
 
 const fixtureRoot = resolve(
-  process.env.DEVPILOT_FIXTURES_DIR || "../devpilot-fixtures",
+  process.env.DEVPILOT_FIXTURES_DIR || resolve(import.meta.dir, ".."),
 );
 const registry = loadRegistry("config/repositories.json", fixtureRoot);
 const root = mkdtempSync(join(tmpdir(), "devpilot-scenarios-"));
@@ -363,5 +363,18 @@ describe("request registry API", () => {
     const body = (await res.json()) as any;
     expect(body.error).toBe("UNKNOWN_REQUEST");
     expect(body.valid_requests).toEqual(Object.keys(registry.stock.requests));
+  });
+});
+
+describe("in-repo fixtures", () => {
+  test("default fixture root is the repository and every private suite digest matches", () => {
+    for (const [name, cfg] of Object.entries<any>(registry)) {
+      expect(cfg.path.startsWith(resolve(import.meta.dir, "../fixtures/"))).toBe(true);
+      for (const entry of Object.values<any>(cfg.requests)) {
+        if (!entry.suite) continue;
+        expect(suiteDigest(entry.suite)).toBe(entry.suite_sha256);
+      }
+      expect(name.length).toBeGreaterThan(0);
+    }
   });
 });

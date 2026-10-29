@@ -13,7 +13,7 @@ import {
 async function main() {
   try {
     const root = resolve(
-      process.env.DEVPILOT_FIXTURES_DIR || "../devpilot-fixtures",
+      process.env.DEVPILOT_FIXTURES_DIR || resolve(import.meta.dir, ".."),
     );
     const registry = loadRegistry(
       process.env.DEVPILOT_REGISTRY || "config/repositories.json",

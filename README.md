@@ -189,3 +189,9 @@ Agent messages and review conclusions are claims; observed test exits and scanne
 The full event envelopes, payload fields, usage accounting, replay behavior, and pairing contract are documented in [docs/EVENTS.md](docs/EVENTS.md).
 
 For a single live Shogun plan check against the stock fixture, set `MINIMAX_API_KEY` and run `bun scripts/live-plan-check.ts`. It makes one model call and prints only whether the plan parsed and its task IDs. Malformed agent replies get one schema-specific repair attempt; rejected replies are redacted and stored in local runtime debug files referenced by artifact ID. Planning can finish through `submit_plan`; text replies are validated as a fallback. The adapter preserves complete assistant messages for tool continuations, as described in the [MiniMax tool-use guide](https://platform.minimax.io/docs/guides/text-m3-function-call).
+
+## Fixtures and demo
+
+The fixture repos, registry and hidden acceptance suites live in `fixtures/` (`fixtures/registry.json`, `fixtures/repos/`, `fixtures/private/`, regeneration tools in `fixtures/tools/`). `DEVPILOT_FIXTURES_DIR` defaults to the repository root, so a fresh clone runs `bun install && bun test` with no extra setup. Note: the hidden suites are therefore public in this repo.
+
+`bun run demo` installs and builds `web/` (output goes to `runtime/web-dist`; web sources are not modified) and serves the UI and API same-origin from Bun on `PORT` (default 8787). It defaults to `DEVPILOT_MODEL=mock`; the usual isolation settings still apply (`DEVPILOT_CONTAINER_IMAGE=<image>@sha256:...`, or `DEVPILOT_ALLOW_UNISOLATED=1` for a dev fallback). Set `DEVPILOT_WEB_DIR` to serve any prebuilt UI from `bun start`.
