@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../src/server";
-import { Service } from "../src/service";
+import { Service, assessFinding } from "../src/service";
 import { commandFor, readTool, editTool } from "../src/tools";
 import { treeHash } from "../src/tree";
 import type { Runner } from "../src/runner";
@@ -1877,4 +1877,176 @@ test("configured browser origins receive CORS access and unknown origins are rej
     if (previous === undefined) delete process.env.DEVPILOT_ALLOWED_ORIGINS;
     else process.env.DEVPILOT_ALLOWED_ORIGINS = previous;
   }
+});
+
+describe("gate rules for critical findings", () => {
+  const snapshot = () => {
+    const root = mkdtempSync(join(tmpdir(), "devpilot-gate-"));
+    roots.push(root);
+    writeFileSync(join(root, "calc.py"), "def add(a, b):\n    return a + b\n");
+    return root;
+  };
+  const critical = {
+    severity: "critical",
+    title: "Off by one",
+    detail: "Adds one.",
+    in_scope: true,
+    evidence: { path: "calc.py", line: 2 },
+  };
+
+  test("a repeated critical stays blocking; a repeated high does not", () => {
+    const root = snapshot();
+    const c = assessFinding(critical, root, true, false);
+    expect(c.blocking).toBe(true);
+    expect(c.severity).toBe("critical");
+    const h = assessFinding({ ...critical, severity: "high" }, root, true, false);
+    expect(h.blocking).toBe(false);
+    expect(h.advisory_reason).toContain("repeated");
+  });
+
+  test("addressed critical needs resolution evidence and a changed tree", () => {
+    const root = snapshot();
+    const bare = assessFinding({ ...critical, addressed: true }, root, false, false);
+    expect(bare.blocking).toBe(true);
+    expect(bare.unaccepted_resolution).toContain("resolution_evidence");
+    const missing = assessFinding(
+      { ...critical, addressed: true, resolution_evidence: { path: "nope.py", line: 1 } },
+      root,
+      false,
+      false,
+    );
+    expect(missing.blocking).toBe(true);
+    const sameTree = assessFinding(
+      { ...critical, addressed: true, resolution_evidence: { path: "calc.py", line: 2 } },
+      root,
+      false,
+      false,
+      false,
+    );
+    expect(sameTree.blocking).toBe(true);
+    expect(sameTree.unaccepted_resolution).toContain("not changed");
+    const ok = assessFinding(
+      { ...critical, addressed: true, resolution_evidence: { path: "calc.py", line: 2 } },
+      root,
+      false,
+      false,
+      true,
+    );
+    expect(ok.blocking).toBe(false);
+    expect(ok.advisory_reason).toContain("addressed");
+    expect(ok.resolution_evidence).toEqual({ path: "calc.py", line: 2 });
+    // A previous addressed claim (e.g. by key) never voids a critical.
+    expect(assessFinding(critical, root, false, true).blocking).toBe(true);
+    // Non-critical findings keep the old addressed behaviour.
+    expect(
+      assessFinding({ ...critical, severity: "high", addressed: true }, root, false, false)
+        .blocking,
+    ).toBe(false);
+  });
+
+  const editChain = [
+    ["return a - b", "return a + b + 1"],
+    ["return a + b + 1", "return a + b"],
+    ["return a + b", "return b + a"],
+    ["return b + a", "return a + b"],
+  ].flatMap(([old_text, new_text], i) => [
+    call("edit_file", { path: "calc.py", old_text, new_text }, "gate-edit" + i),
+    text({ done: true }),
+  ]);
+  const runMission = async (f: any, name: string) => {
+    const app = startServer({
+      root: join(f.root, name),
+      registry: f.registry,
+      runner: localRunner,
+      mock: true,
+      port: 0,
+    });
+    apps.push(app);
+    const response = await post(`http://127.0.0.1:${app.server.port}/missions`, {
+      repo: "tiny",
+      request: f.request,
+    });
+    const { mission_id } = (await response.json()) as any;
+    await waitFor(() =>
+      ["AWAITING_APPROVAL", "ESCALATED"].includes(
+        app.service.store.get(mission_id).state,
+      ),
+    );
+    return { app, mission_id };
+  };
+
+  test("findings are keyed per reviewer; repeated, bare-addressed and dropped criticals keep blocking", async () => {
+    const f = fixture();
+    const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+    script.samurai = editChain;
+    script.shadow_review = [
+      text({ findings: [critical] }),
+      text({ findings: [{ ...critical, title: "off-by-one!", detail: "Again." }] }),
+      text({ findings: [{ ...critical, addressed: true, detail: "Fixed, trust me." }] }),
+      text({ findings: [] }),
+    ];
+    script.shadow_security = [
+      text({ findings: [{ ...critical, in_scope: false, detail: "Hardening." }] }),
+      text({ findings: [{ ...critical, severity: "high", addressed: true }] }),
+      text({ findings: [] }),
+      text({ findings: [] }),
+    ];
+    const { app, mission_id } = await runMission(f, "gate-keep-runtime");
+    const mission = app.service.store.get(mission_id);
+    expect(mission.state).toBe("ESCALATED");
+    expect(mission.fixes).toBe(3);
+    expect(
+      app.service.store.events(mission_id).find((e) => e.type === "escalation")!
+        .payload.reason,
+    ).toBe("FIX_LIMIT");
+    const findings = app.service.store
+      .events(mission_id)
+      .filter((event) => event.type === "finding");
+    const review = findings.filter((e) => e.agent === "shadow_review");
+    const security = findings.filter((e) => e.agent === "shadow_security");
+    const reviewIds = new Set(review.map((e) => e.payload.finding_id));
+    expect(reviewIds.size).toBe(1);
+    expect(security.length).toBeGreaterThan(0);
+    for (const e of security) expect(reviewIds.has(e.payload.finding_id)).toBe(false);
+    // Every shadow_review emission of the critical stays blocking.
+    expect(review.every((e) => e.payload.blocking && e.payload.action === "open")).toBe(true);
+    expect(review.some((e) => e.payload.unaccepted_resolution)).toBe(true);
+    expect(review.some((e) => e.payload.action === "resolve")).toBe(false);
+    const done = app.service.store
+      .events(mission_id)
+      .find((e) => e.type === "mission_done")!;
+    expect(
+      done.payload.unresolved_findings.some(
+        (f: any) => reviewIds.has(f.finding_id) && f.blocking,
+      ),
+    ).toBe(true);
+  }, 30000);
+
+  test("a reviewer resolves its own critical with resolution evidence after a change", async () => {
+    const f = fixture();
+    const script = Object.values(f.registry.tiny.requests)[0]!.mock_script;
+    script.samurai = editChain;
+    script.shadow_review = [
+      text({ findings: [critical] }),
+      text({
+        findings: [
+          {
+            ...critical,
+            addressed: true,
+            resolution_evidence: { path: "calc.py", line: 2 },
+          },
+        ],
+      }),
+    ];
+    script.shadow_security = [text({ findings: [] }), text({ findings: [] })];
+    const { app, mission_id } = await runMission(f, "gate-resolve-runtime");
+    expect(app.service.store.get(mission_id).state).toBe("AWAITING_APPROVAL");
+    expect(app.service.store.get(mission_id).fixes).toBe(1);
+    const last = app.service.store
+      .events(mission_id)
+      .filter((e) => e.type === "finding" && e.agent === "shadow_review")
+      .at(-1)!;
+    expect(last.payload.blocking).toBe(false);
+    expect(last.payload.resolution_evidence).toEqual({ path: "calc.py", line: 2 });
+  }, 30000);
 });

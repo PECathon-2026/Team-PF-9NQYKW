@@ -77,6 +77,14 @@ export function submitResultTool(phase: Exclude<ReplyPhase, "plan">) {
                 detail: { type: "string" },
                 in_scope: { type: "boolean" },
                 addressed: { type: "boolean" },
+                resolution_evidence: {
+                  type: "object",
+                  properties: {
+                    path: { type: "string" },
+                    line: { type: "integer" },
+                  },
+                  additionalProperties: false,
+                },
                 evidence: {
                   type: "object",
                   properties: {
