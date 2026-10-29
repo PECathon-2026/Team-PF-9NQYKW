@@ -72,15 +72,32 @@ export function TaskBoard({ v }: { v: View }) {
 
 // Only show the unisolated tag where a runner actually executed something.
 const RUN_TYPES = new Set(["test_result", "tool_result"]);
-export function Timeline({ v }: { v: View }) {
-  const [filter, setFilter] = useState("all");
-  const agents = ["all", ...Array.from(new Set(v.events.map((e) => e.agent)))];
+export function Timeline({ v, filter, setFilter }: { v: View; filter: string; setFilter: (filter: string) => void }) {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const agents = Array.from(new Set(["all", ...(filter !== "all" ? [filter] : []), ...v.events.map((e) => e.agent)]));
   const list = v.events.filter((e) => filter === "all" || e.agent === filter);
+  const selected = list.find((e) => e.id === selectedId) ?? list[list.length - 1];
+  const start = list.length ? Math.min(...list.map((e) => e.ts)) : 0;
+  const end = list.length ? Math.max(...list.map((e) => e.ts)) : 0;
+  const duration = end - start;
+  const lanes = Array.from(new Set(list.map((e) => e.agent)));
   return (
     <section className="card tl">
       <h3>Agent activity
-        <select value={filter} onChange={(e) => setFilter(e.target.value)}>{agents.map((a) => <option key={a}>{a}</option>)}</select>
+        <select aria-label="Filter activity by agent" value={filter} onChange={(e) => setFilter(e.target.value)}>{agents.map((a) => <option key={a}>{a}</option>)}</select>
       </h3>
+      <div className="trace-layout">
+        <div className="trace" aria-label="Event trace">
+          {list.length ? <>
+            <div className="trace-axis"><span>Agent</span><div><span>{time(start)}</span><span>{duration ? time(start + duration / 2) : ""}</span><span>{duration ? time(end) : ""}</span></div></div>
+            {lanes.map((agent) => <div className="trace-lane" key={agent}><span className="trace-agent">{agent.replace(/_/g, " ")}</span><div className="trace-track">{list.filter((e) => e.agent === agent).map((e) => <button type="button" key={e.id} className={`trace-event ${e.type === "agent_msg" ? "message" : ""} ${selected?.id === e.id ? "selected" : ""}`} style={{ left: `${duration ? ((e.ts - start) / duration) * 100 : 50}%` }} onClick={() => setSelectedId(e.id)} aria-label={`Event #${e.id}, ${e.type}, ${time(e.ts)}`} aria-pressed={selected?.id === e.id} title={`#${e.id} ${e.type}: ${summary(e)}`} />)}</div></div>)}
+          </> : <p className="muted trace-empty">No events for this agent yet.</p>}
+        </div>
+        <aside className="trace-detail" aria-label="Selected event detail">
+          {selected ? <><div className="trace-detail-heading"><span className="eyebrow">Selected event</span><span className="mono muted">#{selected.id}</span></div><strong>{selected.type.replace(/_/g, " ")}</strong><div className="trace-detail-meta">{selected.agent.replace(/_/g, " ")} · {time(selected.ts)} <Prov e={selected} stale={v.staleIds.has(selected.id)} unisolated={RUN_TYPES.has(selected.type) && v.unisolated.has(selected.id)} /></div><div className="esum">{summary(selected)}</div></> : <p className="muted">Select an event to inspect it.</p>}
+        </aside>
+      </div>
+      <div className="log-label">Event log <span>{list.length} events</span></div>
       <ol className="events">
         {list.map((e) => (
           <li key={e.id} className={v.staleIds.has(e.id) ? "is-stale" : ""}>
@@ -95,7 +112,7 @@ export function Timeline({ v }: { v: View }) {
     </section>
   );
 }
-function summary(e: MissionEvent): string {
+export function summary(e: MissionEvent): string {
   const p = e.payload;
   const cite = (k: string) => (Array.isArray(p[k]) && (p[k] as unknown[]).length ? `  ← ${(p[k] as unknown[]).map((x) => `#${x}`).join(" ")}` : "");
   switch (e.type) {
@@ -104,7 +121,7 @@ function summary(e: MissionEvent): string {
     case "task_update": return `${str(p.task_id)}: ${str(p.previous_status)} → ${str(p.new_status)}${cite("reason_event_ids")}`;
     case "agent_msg": return `→ ${str(p.to ?? p.recipient)}: ${str(p.message)}${Array.isArray(p.findings) ? ` · ${p.findings.length} findings` : ""}${typeof p.scanner_findings === "number" ? ` · scanner ${p.scanner_findings}` : ""}${cite("evidence_event_ids")}${cite("cited_event_ids")}`;
     case "tool_call": return `${str(p.tool)}(${JSON.stringify(p.arguments ?? p.args ?? {})})`;
-    case "tool_result": { if (p.ok === false) return `error ${str((p.error as Record<string, unknown> | undefined)?.code ?? p.error, "unknown")}`; const d = p.data as Record<string, unknown> | undefined; const s = d ? (typeof d.content === "string" ? d.content : JSON.stringify(d)) : str(p.result, "ok"); return s.length > 400 ? s.slice(0, 400) + "…" : s; }
+    case "tool_result": { if (p.ok === false) return `error ${str((p.error as Record<string, unknown> | undefined)?.code ?? p.error, "unknown")}`; const d = p.data as Record<string, unknown> | undefined; const s = d ? (typeof d.content === "string" ? d.content : JSON.stringify(d)) : str(p.result, "ok"); return s; }
     case "test_result": { const cr = Array.isArray(p.criteria) ? (p.criteria as { passed?: boolean }[]) : null; return `${p.phase === "baseline" ? "baseline · " : ""}${str(p.suite_id ?? p.check_id)} ${str(p.outcome)}${p.exit_code !== undefined ? ` (exit ${str(p.exit_code)})` : ""}${cr ? ` · ${cr.filter((c) => c.passed).length}/${cr.length} criteria` : ""}${cite("cause_event_ids")}`; }
     case "finding": return `${str(p.finding_id)} ${str(p.action)} [${str(p.severity)}] ${str(p.title ?? p.description ?? p.resolution)}${cite("evidence_event_ids")}`;
     case "diff": return `${short(str(p.revision))}: ${Array.isArray(p.changed_paths) ? p.changed_paths.join(", ") : ""}`;
