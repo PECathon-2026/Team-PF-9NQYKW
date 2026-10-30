@@ -35,6 +35,16 @@ Open **http://127.0.0.1:8787**. The default `DEVPILOT_MODEL=mock` runs the agent
 | Windows | Use WSL2 for the smoothest run; native Windows works with Docker Desktop |
 | Trusted local dev without containers | `DEVPILOT_ALLOW_UNISOLATED=1` (no security boundary; missions escalate and never reach approval) |
 
+## Supported projects and why
+
+DevPilot currently works on **Python projects tested with pytest** only. That covers the built-in demo repositories and any public GitHub repo you paste in.
+
+**Why only Python for now:** DevPilot never trusts an agent's word that the code works. It approves a change only after it runs the tests itself in a sealed container and checks that the existing tests were not edited. Every language runs and installs its tests differently, so each one needs its own pinned container image, exact install and test commands, and its own tamper protection (pytest shadow files, `conftest.py` and similar for Python). We built and hardened that path for pytest first. Node (`npm test`), Go, Rust, Java and C/C++ (`make test`/`ctest`) are next on the roadmap. Guessing the test command instead would let a mission "pass" without really testing anything.
+
+## Model and testing
+
+Every agent role was developed and tested with **MiniMax-M3.1-Flash**, using native tool calling (`read_file`, `list_dir`, `search`, `edit_file`, `run_cmd`, `submit_plan`). All demo missions, the cheat red-team fixture and real GitHub runs (for example `keleshev/schema`) reached the approval gate and completed after human approval on that model. Any key goes in `.env` as `MINIMAX_API_KEY`. With `DEVPILOT_MODEL=mock` the app runs without a key, and the Recorded replay needs no backend at all. The backend test suite (135 tests) runs with `bun test`.
+
 ## The agents
 
 A deterministic TypeScript orchestrator schedules six roles. The model roles use MiniMax-M3.1-Flash with tool calling; Samurai is the only role that can edit files.
