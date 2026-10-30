@@ -33,6 +33,7 @@ function turns(v: View, a: Agent) {
   return { label: `${u}/${cap} turns`, level: u >= cap ? "spent" : u >= cap - 1 ? "low" : "", title: `${u} of ${cap} turns used` };
 }
 export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; selected: string; onSelect: (id: FigureAgent) => void }) {
+  const repoTests = v.events.some((e) => e.type === "mission_started" && e.payload.acceptance_mode === "repo_tests");
   const handoff = [...v.events].reverse().find((e) => e.type === "agent_msg" && now - e.ts < 5000);
   const handoffFrom = handoff ? CAST.findIndex((a) => a.id === handoff.agent) : -1;
   const handoffTo = handoff ? CAST.findIndex((a) => a.id === (handoff.payload.to ?? handoff.payload.recipient)) : -1;
@@ -48,10 +49,10 @@ export function Dojo({ v, now, selected, onSelect }: { v: View; now: number; sel
         const mood = stageState(v.events, c.id, now); const art = FIGURES[c.id]; const t = turns(v, c.id);
         const { icon: RoleIcon, accent } = ROLE_MARKS[c.id];
         const style = c.id === "samurai" ? { "--figure-mask": `url("${art}")` } as CSSProperties : undefined;
-        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} style={{ "--role-accent": accent } as CSSProperties} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}: ${c.role.toLowerCase()}. ${STATUS[mood]}. Show activity`} title={`${c.role}. Select to show activity.`}>
+        return <button type="button" key={c.id} className={`actor m-${mood} ${selected === c.id ? "selected" : ""}`} style={{ "--role-accent": accent } as CSSProperties} onClick={() => onSelect(c.id)} aria-pressed={selected === c.id} aria-label={`${c.name}: ${(repoTests && c.id === "verifier" ? "Runs the repository's own tests" : c.role).toLowerCase()}. ${STATUS[mood]}. Show activity`} title={`${(repoTests && c.id === "verifier" ? "Runs the repository's own tests" : c.role)}. Select to show activity.`}>
           <span className={`agent-figure ${mood}`} aria-hidden="true"><span className="figure-mist" /><span className={`figure-art${c.id === "samurai" ? " samurai" : ""}`} style={style}><img src={art} alt="" /></span></span>
           <span className="actor-title"><RoleIcon size={12} aria-hidden="true" focusable="false" /><span>{c.name}</span></span>
-          <span className="actor-role">{c.role}</span>
+          <span className="actor-role">{(repoTests && c.id === "verifier" ? "Runs the repository's own tests" : c.role)}</span>
           <span className={`actor-status status-${mood}`}>{STATUS[mood]}{t && <span className={`turns ${t.level}`} title={t.title}> · {t.label}</span>}</span>
         </button>;
       })}
