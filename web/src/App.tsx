@@ -83,7 +83,7 @@ export default function App() {
     { group: "Go to", label: "Compare runs", icon: Columns2, run: () => navigate("compare") },
     { group: "Actions", label: "New mission", icon: Plus, run: newMission },
     ...CAST.map((a) => ({ group: "Agents", label: a.name, icon: Activity, run: () => { setFilter(a.id); setFocus(null); setTab("activity"); navigate("mission"); } })),
-    ...REPOS.map((r) => ({ group: "Repositories", label: r, icon: GitBranch, run: () => chooseRepo(r) })),
+    ...REPOS.map((r) => ({ group: "Demo repositories", label: r, icon: GitBranch, run: () => chooseRepo(r) })),
     { group: "Actions", label: mode === "live" ? "Start demo replay" : "Exit demo replay", icon: CirclePlay, run: toggleReplay },
   ].filter((c) => `${c.group} ${c.label}`.toLowerCase().includes(query.toLowerCase()));
   const pending = !!v.pendingApproval && !v.approvalResult && !v.done;
@@ -108,7 +108,7 @@ export default function App() {
         <button className={route === "compare" ? "side-link active" : "side-link"} onClick={() => navigate("compare")} title="Compare"><Columns2 size={17} /><span>Compare</span></button>
         <button className={mode === "replay" ? "side-link replay-active" : "side-link"} onClick={toggleReplay} title={mode === "replay" ? "Exit recorded replay and return to live missions" : "Plays a recorded run. No AI runs, instant and free"} aria-label={mode === "replay" ? "Exit recorded replay" : "Recorded replay"} aria-pressed={mode === "replay"}><CirclePlay size={17} /><span>{mode === "replay" ? "Exit recorded replay" : "Recorded replay"}</span>{mode === "replay" && <small>On</small>}</button>
       </div>
-      <div className="side-section"><div className="side-heading">Repositories</div>{REPOS.map((r) => <button className={`repo-link ${repo === r && !(missionId && String(shownRepo).startsWith("github:")) ? "active" : ""}`} key={r} onClick={() => chooseRepo(r)} title={r}><GitBranch size={14} /><span>{r}</span></button>)}</div>
+      <div className="side-section"><div className="side-heading">Demo repositories</div>{REPOS.map((r) => <button className={`repo-link ${repo === r && !(missionId && String(shownRepo).startsWith("github:")) ? "active" : ""}`} key={r} onClick={() => chooseRepo(r)} title={r}><GitBranch size={14} /><span>{r}</span></button>)}</div>
     </aside>
     <main className="main">
       <div className="utility-bar"><div className="breadcrumb">{route === "compare" ? <strong>Compare</strong> : <><span className="crumb-repo" title={shownRepo}>{shownRepo}</span><ChevronRight size={13} /><strong>{missionId ? "Mission" : "New mission"}</strong></>}</div><div className="utility-actions"><button className="new-mission-button" onClick={newMission}><Plus size={14} /> New mission</button><button className="search-shortcut" onClick={() => { setPalette(true); setQuery(""); }}><Search size={14} /><span>Commands</span><kbd>⌘K</kbd></button></div></div>
