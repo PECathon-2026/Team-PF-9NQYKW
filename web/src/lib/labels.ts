@@ -50,13 +50,15 @@ export const HELP = {
 
 export type CheckKind = "check" | "acceptance";
 export function checkLabel(id: string, kind: CheckKind): string {
+  if (kind === "acceptance" && /^repo\./.test(id)) return "Repository acceptance (its own tests, unmodified)";
   if (kind === "acceptance") return "Hidden acceptance tests";
   if (/(?:^|[.\/_-])pytest$/i.test(id)) return "Visible tests (pytest)";
   if (/(?:^|[.\/_-])unit$/i.test(id)) return "Visible tests (unit)";
   const name = id.split(/[.\/]/).pop() || id;
   return name && name !== "check" ? `Registered check (${humanize(name)})` : "Registered check";
 }
-export const checkHelp = (id: string, kind: CheckKind) => kind === "acceptance" ? HELP.acceptanceTests
+export const checkHelp = (id: string, kind: CheckKind) => kind === "acceptance" && /^repo\./.test(id) ? "For a GitHub repository there is no hidden suite: DevPilot reruns the repository's own tests and checks the agents did not change them."
+  : kind === "acceptance" ? HELP.acceptanceTests
   : /(?:^|[.\/_-])pytest$/i.test(id) ? HELP.pytest
   : /(?:^|[.\/_-])unit$/i.test(id) ? HELP.visibleTests : HELP.registeredCheck;
 
