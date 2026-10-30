@@ -5,7 +5,8 @@
   "scripts": {
     "start": "bun src/server.ts",
     "test": "bun test",
-    "demo": "bun scripts/demo.ts"
+    "demo": "bun scripts/demo.ts",
+    "setup": "bun scripts/setup.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

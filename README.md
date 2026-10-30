@@ -6,6 +6,35 @@ A multi-agent engineering system that plans, edits, tests and reviews a change t
 
 Demo video (60 s): [docs/media/devpilot-demo.mp4](docs/media/devpilot-demo.mp4)
 
+## Quick start (judges: start here)
+
+**Prerequisites**
+- [Bun](https://bun.sh) 1.1+ — macOS/Linux: `curl -fsSL https://bun.sh/install | bash`; Windows: `powershell -c "irm bun.sh/install.ps1 | iex"`
+- [Podman](https://podman.io/docs/installation) (rootless) **or** [Docker](https://docs.docker.com/get-docker/) — needed for real missions (sandboxed pytest). macOS/Windows: start it first (`podman machine init && podman machine start`, or open Docker Desktop).
+- Git. No Python on the host is needed; Python 3.12 + pytest live in the container image.
+
+**Run it (no API key needed)**
+```sh
+git clone https://github.com/PECathon-2026/Team-PF-9NQYKW devpilot && cd devpilot
+bun run setup     # installs deps, builds the pinned sandbox image, writes .env
+bun run demo      # builds the UI and serves UI + API together
+```
+Open **http://127.0.0.1:8787**. The default `DEVPILOT_MODEL=mock` runs the agents with scripted responses, so no key is required. Pick a demo repo (e.g. `stock`) in **New mission**.
+
+**Recorded replay (no backend, no container, no key):** `cd web && bun install && bun run dev`, then open **http://localhost:5173/?replay=1** ("Demo replay (simulated)").
+
+**Live model (optional):** in `.env`, set `MINIMAX_API_KEY=<your key>` and remove `DEVPILOT_MODEL=mock`, then `bun run demo`. See [.env.example](.env.example). Never commit `.env`.
+
+**Troubleshooting**
+| Symptom | Fix |
+|---|---|
+| `PINNED_CONTAINER_IMAGE_REQUIRED` | Run `bun run setup` (writes `DEVPILOT_CONTAINER_IMAGE=devpilot-py:1@sha256:...` to `.env`) |
+| `SANDBOX_UNAVAILABLE` | Podman/Docker not installed or not running; start Docker Desktop / `podman machine start` |
+| Port 8787 in use | `PORT=8899 bun run demo` (Windows PowerShell: `$env:PORT=8899; bun run demo`) |
+| `bun: command not found` | Restart the terminal after installing Bun |
+| Windows | Use WSL2 for the smoothest run; native Windows works with Docker Desktop |
+| Trusted local dev without containers | `DEVPILOT_ALLOW_UNISOLATED=1` (no security boundary; missions escalate and never reach approval) |
+
 ## The agents
 
 A deterministic TypeScript orchestrator schedules six roles. The model roles use MiniMax-M3.1-Flash with tool calling; Samurai is the only role that can edit files.
@@ -63,7 +92,7 @@ For acceptance, pytest and the candidate run in separate offline containers. Can
 
 For trusted local development only, `DEVPILOT_ALLOW_UNISOLATED=1` explicitly permits host subprocess execution without Docker or Podman. **This provides no security boundary against repository code**: it can access host files, processes, and network under the service account. Each resulting `test_result` includes `payload.isolation: "unisolated"`. Such missions escalate with `ISOLATION_UNAVAILABLE` and cannot enter the approval gate. The server passes a restricted environment to subprocesses, but the flag is unsuitable for untrusted code.
 
-## Quick start
+## Manual setup
 
 Requirements: Bun, Python 3 with pytest, and rootless Podman or Docker.
 
