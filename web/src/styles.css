@@ -527,3 +527,34 @@ select option{white-space:normal}
 }
 .event-details pre,.tl pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;overflow-x:auto}
 .esum{white-space:break-spaces;overflow-wrap:anywhere;max-width:100%}
+
+/* Recorded replay picker */
+.simbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.simbar-exit{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:14px;padding:7px 12px;border:1px solid #6b4d40;background:rgba(60,40,32,.6);color:#f1e3d7;border-radius:6px}
+.replay-picker{max-width:760px;margin:0 auto;padding:28px}
+.replay-picker>p{font-size:16px;margin:4px 0 20px}
+.replay-cards{display:grid;gap:14px}
+.replay-card{display:flex;align-items:center;gap:18px;width:100%;text-align:left;padding:20px 22px;border:1px solid rgba(225,216,204,.2);border-radius:10px;background:rgba(24,23,22,.75);color:var(--ink);cursor:pointer;transition:border-color var(--fast),background var(--fast)}
+.replay-card:hover:not(:disabled){border-color:var(--accent);background:rgba(97,62,48,.3)}
+.replay-play{flex:none;color:var(--accent);display:grid}
+.replay-text{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}
+.replay-text strong{font-size:18px;font-weight:600}
+.replay-text span{font-size:15.5px;line-height:1.5;color:var(--ink2)}
+.replay-cta{flex:none;background:var(--accent);color:#fff;font-weight:600;font-size:16px;padding:12px 22px;border-radius:8px}
+
+/* Phone: sidebar becomes a compact top bar */
+@media (max-width:640px){
+  .shell,.shell.sidebar-collapsed{display:block;--side:0px}
+  .sidebar{position:sticky;top:0;height:auto;flex-direction:row;align-items:center;gap:4px;padding:6px 8px;border-right:0;border-bottom:1px solid var(--line);overflow-x:auto}
+  .sidebar .brand-row{flex:none;padding:0;margin:0;border:0;min-height:0}
+  .sidebar .side-nav{display:flex;flex-direction:row;gap:4px;margin:0}
+  .sidebar .side-link{width:auto;padding:8px 10px}
+  .sidebar .side-link span{display:none}
+  .sidebar .side-link.replay-active span{display:inline;font-size:13px}
+  .sidebar .side-link{padding:9px}
+  .sidebar .side-link small,.sidebar .side-section,.sidebar .collapse{display:none}
+  .approval-bar{left:0}
+  .replay-card{flex-wrap:wrap;padding:16px}
+  .replay-cta{width:100%;text-align:center}
+  .replay-picker{padding:18px}
+}
